@@ -1,0 +1,208 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Discover — Ember</title>
+<meta name="description" content="Find someone new on Ember." />
+<meta name="theme-color" content="#7B35A8" />
+<link rel="stylesheet" href="/css/app.css" />
+<link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%237B35A8'/%3E%3Cstop offset='100%25' stop-color='%23B03A93'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M50 88C25 70 8 55 8 36 8 22 19 12 32 12c8 0 15 4 18 10 3-6 10-10 18-10 13 0 24 10 24 24 0 19-17 34-42 52z'/%3E%3C/svg%3E" />
+</head>
+<body class="bg-surface-grey lg:bg-surface-grey">
+<a href="#main" class="sr-only-focusable btn-primary fixed left-4 top-4 z-50">Skip to content</a>
+
+<div class="app-shell">
+  <div class="app-frame">
+
+    <!-- ------------------------------------------------------- sidebar -->
+    <aside class="sidebar bg-surface">
+      <div class="flex items-center justify-between border-b border-hairline/[var(--hairline-a)] px-5 py-4">
+        <a href="/app" class="flex items-center gap-2" aria-label="Ember">
+          <span class="grid h-9 w-9 place-items-center rounded-2xl bg-brand-gradient" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-white"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+          </span>
+          <span class="text-lg font-extrabold tracking-tight">Ember</span>
+        </a>
+        <div class="flex items-center gap-1">
+          <button type="button" data-action="theme" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"
+                  class="theme-toggle">
+            <svg viewBox="0 0 24 24" class="h-[18px] w-[18px] fill-current" aria-hidden="true" data-theme-icon></svg>
+          </button>
+          <button type="button" class="btn-ghost !px-3 !py-2 text-sm" data-action="logout">Log out</button>
+        </div>
+      </div>
+
+      <a href="/profile" class="flex items-center gap-3 border-b border-hairline/[var(--hairline-a)] px-5 py-4 transition hover:bg-surface-grey">
+        <img data-me-avatar src="" alt="" class="avatar h-12 w-12" />
+        <div class="min-w-0">
+          <p class="truncate font-semibold text-ink" data-me-name>&nbsp;</p>
+          <p class="text-[13px] text-ink-soft">View and edit profile</p>
+        </div>
+      </a>
+
+      <nav class="flex flex-col gap-1 p-3" aria-label="Main">
+        <a href="/app" data-nav="app" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M13.5 1.5s.7 2.6-1 4.6c-1.6 2-3.4 2.6-3.4 5.2 0 1.3.7 2.3 1.6 2.8-.3-1.4.2-2.9 1.4-3.8-.2 2 1.2 3 2.3 4.1 1 1 1.1 2.4.6 3.4 2-.8 3.5-2.9 3.5-5.3 0-3-2-4.6-2.6-6.3-.5 1-1.4 1.6-1.4 1.6s.9-3.7-1-6.3zM8.6 14.4C7.6 15.4 7 16.8 7 18.3 7 20.9 9.2 23 12 23s5-2.1 5-4.7c0-.6-.1-1.2-.3-1.7-.6 2-2.5 3.4-4.7 3.4-1.8 0-2.9-1-3.1-2.4-.1-1 .1-2 .7-3.2z"/></svg>
+          Discover
+        </a>
+        <a href="/nearby" data-nav="nearby" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 2a7 7 0 00-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 00-7-7zm0 9.5A2.5 2.5 0 1112 6.5a2.5 2.5 0 010 5z"/></svg>
+          Nearby
+        </a>
+        <a href="/moments" data-nav="moments" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4zM9 2l-1.7 2H4a2 2 0 00-2 2v13a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2h-3.3L15 2H9zm3 4.8A5.2 5.2 0 1112 17.2 5.2 5.2 0 0112 6.8z"/></svg>
+          Moments
+        </a>
+        <button type="button" data-action="search" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-current" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg>
+          Search by username
+          <kbd class="ml-auto rounded border border-line/[var(--line-a)] bg-surface-grey px-1.5 py-0.5 text-[11px] font-semibold text-ink-faint">/</kbd>
+        </button>
+        <button type="button" data-action="notifications" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 22a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 22zm7-6v-5a7 7 0 00-5.5-6.83V3.5a1.5 1.5 0 00-3 0v.67A7 7 0 005 11v5l-2 2v1h18v-1l-2-2z"/></svg>
+          Notifications
+          <span class="badge ml-auto hidden" data-badge="notifications">0</span>
+        </button>
+        <a href="/likes" data-nav="likes" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+          Likes
+          <span class="badge ml-auto hidden" data-badge="likes">0</span>
+        </a>
+        <a href="/matches" data-nav="matches" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M16.5 3c-1.7 0-3.3.8-4.5 2.1C10.8 3.8 9.2 3 7.5 3 4.4 3 2 5.5 2 8.5c0 3.9 4 7 9 10.5l1 .7 1-.7c5-3.5 9-6.6 9-10.5C22 5.5 19.6 3 16.5 3z"/></svg>
+          Matches
+          <span class="badge ml-auto hidden" data-badge="matches">0</span>
+        </a>
+        <a href="/chats" data-nav="chats" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M20 2H4a2 2 0 00-2 2v18l4-4h14a2 2 0 002-2V4a2 2 0 00-2-2z"/></svg>
+          Chats
+          <span class="badge ml-auto hidden" data-badge="chats">0</span>
+        </a>
+        <a href="/profile" data-nav="profile" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 12a5 5 0 100-10 5 5 0 000 10zm0 2c-5 0-9 2.5-9 5.5V22h18v-2.5c0-3-4-5.5-9-5.5z"/></svg>
+          Profile
+        </a>
+        <a href="/admin" data-nav="admin" data-staff-only class="hidden flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 2l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5l8-3zm0 6a2 2 0 100 4 2 2 0 000-4zm0 5.5c-1.8 0-3.5.9-3.5 2v1h7v-1c0-1.1-1.7-2-3.5-2z"/></svg>
+          Moderation
+        </a>
+        <a href="/settings" data-nav="settings" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm9.4 4a7.4 7.4 0 01-.1 1.2l2 1.6-2 3.4-2.4-1a7.5 7.5 0 01-2 1.2l-.4 2.6h-4l-.4-2.6a7.5 7.5 0 01-2-1.2l-2.4 1-2-3.4 2-1.6A7.4 7.4 0 012.6 12c0-.4 0-.8.1-1.2l-2-1.6 2-3.4 2.4 1a7.5 7.5 0 012-1.2L7.5 3h4l.4 2.6c.7.3 1.4.7 2 1.2l2.4-1 2 3.4-2 1.6c.1.4.1.8.1 1.2z"/></svg>
+          Settings
+        </a>
+      </nav>
+
+      <div class="mt-auto p-5">
+        <div class="rounded-3xl bg-brand-50 p-4">
+          <h2 class="flex items-center gap-2 text-sm font-bold text-brand-700">
+            <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5v6l4.5 2.7-.8 1.3L11 14V7h2z"/></svg>
+            24-hour rule
+          </h2>
+          <p class="mt-1.5 text-[13px] leading-relaxed text-brand-700/85">
+            Messages, photos and videos are deleted permanently 24 hours after they are sent.
+          </p>
+        </div>
+        <p class="mt-4 text-center text-[11px] text-ink-faint">
+          <kbd class="rounded border border-line/[var(--line-a)] bg-surface px-1">←</kbd> nope ·
+          <kbd class="rounded border border-line/[var(--line-a)] bg-surface px-1">→</kbd> like ·
+          <kbd class="rounded border border-line/[var(--line-a)] bg-surface px-1">↑</kbd> super ·
+          <kbd class="rounded border border-line/[var(--line-a)] bg-surface px-1">Z</kbd> rewind
+        </p>
+      </div>
+    </aside>
+
+    <!-- ---------------------------------------------------------- main -->
+    <div class="pane bg-surface lg:rounded-r-4xl">
+
+      <!-- mobile header -->
+      <header class="flex items-center justify-between border-b border-hairline/[var(--hairline-a)] px-4 py-3 safe-top lg:hidden">
+        <a href="/profile" aria-label="Your profile">
+          <img data-me-avatar src="" alt="" class="avatar h-9 w-9" />
+        </a>
+        <span class="flex items-center gap-1.5 text-lg font-extrabold tracking-tight">
+          <span class="grid h-7 w-7 place-items-center rounded-xl bg-brand-gradient" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="h-4 w-4 fill-white"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+          </span>
+          Ember
+        </span>
+        <div class="flex items-center gap-0.5">
+          <button type="button" data-action="theme" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"
+                  class="theme-toggle lg:hidden">
+            <svg viewBox="0 0 24 24" class="h-[18px] w-[18px] fill-current" aria-hidden="true" data-theme-icon></svg>
+          </button>
+          <button type="button" data-action="search" class="grid h-9 w-9 place-items-center rounded-full text-ink-soft hover:bg-surface-grey" aria-label="Search by username">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-current" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg>
+          </button>
+          <button type="button" data-action="notifications" class="relative grid h-9 w-9 place-items-center rounded-full text-ink-soft hover:bg-surface-grey" aria-label="Notifications">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 22a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 22zm7-6v-5a7 7 0 00-5.5-6.83V3.5a1.5 1.5 0 00-3 0v.67A7 7 0 005 11v5l-2 2v1h18v-1l-2-2z"/></svg>
+            <span class="badge absolute -right-0.5 -top-0.5 hidden" data-badge="notifications">0</span>
+          </button>
+          <a href="/likes" class="relative grid h-9 w-9 place-items-center rounded-full text-ink-soft hover:bg-surface-grey" aria-label="Likes you">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+            <span class="badge absolute -right-0.5 -top-0.5 hidden" data-badge="likes">0</span>
+          </a>
+        </div>
+      </header>
+
+      <main id="main" class="flex min-h-0 flex-1 flex-col px-4 pb-3 pt-3 lg:px-8 lg:pt-6">
+        <!-- card stack: aspect-locked, centred, never overflows -->
+        <div class="relative mx-auto w-full max-w-[420px] flex-1" id="stack-wrap">
+          <div class="absolute inset-0" id="stack" aria-live="polite" aria-label="Profile cards"></div>
+        </div>
+
+        <!-- action bar -->
+        <div class="mx-auto mt-4 flex w-full max-w-[420px] items-center justify-center gap-3 lg:gap-4" id="actions">
+          <button type="button" class="action-btn action-btn-sm" data-action="rewind" aria-label="Rewind last swipe" title="Rewind (Z)">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-rewind" aria-hidden="true"><path d="M12 5V1L7 6l5 5V7a6 6 0 11-6 6H4a8 8 0 108-8z"/></svg>
+          </button>
+          <button type="button" class="action-btn action-btn-lg" data-action="pass" aria-label="Pass" title="Nope (←)">
+            <svg viewBox="0 0 24 24" class="h-7 w-7 fill-nope" aria-hidden="true"><path d="M18.3 5.7L12 12l6.3 6.3-1.4 1.4L10.6 13.4 4.3 19.7 2.9 18.3 9.2 12 2.9 5.7l1.4-1.4L10.6 10.6l6.3-6.3z"/></svg>
+          </button>
+          <button type="button" class="action-btn action-btn-sm" data-action="superlike" aria-label="Super like" title="Super like (↑)">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-superlike" aria-hidden="true"><path d="M12 2l2.9 6.3 6.9.8-5.1 4.7 1.4 6.8L12 17.3 5.9 20.6l1.4-6.8L2.2 9.1l6.9-.8z"/></svg>
+          </button>
+          <button type="button" class="action-btn action-btn-lg" data-action="like" aria-label="Like" title="Like (→)">
+            <svg viewBox="0 0 24 24" class="h-7 w-7 fill-like" aria-hidden="true"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+          </button>
+        </div>
+        <p class="mt-2 text-center text-[12px] text-ink-faint lg:hidden">Swipe, or use the buttons</p>
+      </main>
+
+      <!-- mobile tab bar -->
+      <nav class="tabbar" aria-label="Main">
+        <a href="/app" data-nav="app" class="tab">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M13.5 1.5s.7 2.6-1 4.6c-1.6 2-3.4 2.6-3.4 5.2 0 1.3.7 2.3 1.6 2.8-.3-1.4.2-2.9 1.4-3.8-.2 2 1.2 3 2.3 4.1 1 1 1.1 2.4.6 3.4 2-.8 3.5-2.9 3.5-5.3 0-3-2-4.6-2.6-6.3-.5 1-1.4 1.6-1.4 1.6s.9-3.7-1-6.3zM8.6 14.4C7.6 15.4 7 16.8 7 18.3 7 20.9 9.2 23 12 23s5-2.1 5-4.7c0-.6-.1-1.2-.3-1.7-.6 2-2.5 3.4-4.7 3.4-1.8 0-2.9-1-3.1-2.4-.1-1 .1-2 .7-3.2z"/></svg>
+          Discover
+        </a>
+        <a href="/matches" data-nav="matches" class="tab">
+          <span class="relative">
+            <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M16.5 3c-1.7 0-3.3.8-4.5 2.1C10.8 3.8 9.2 3 7.5 3 4.4 3 2 5.5 2 8.5c0 3.9 4 7 9 10.5l1 .7 1-.7c5-3.5 9-6.6 9-10.5C22 5.5 19.6 3 16.5 3z"/></svg>
+            <span class="badge absolute -right-2 -top-1 hidden" data-badge="matches">0</span>
+          </span>
+          Matches
+        </a>
+        <a href="/moments" data-nav="moments" class="tab">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4zM9 2l-1.7 2H4a2 2 0 00-2 2v13a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2h-3.3L15 2H9zm3 4.8A5.2 5.2 0 1112 17.2 5.2 5.2 0 0112 6.8z"/></svg>
+          Moments
+        </a>
+        <a href="/chats" data-nav="chats" class="tab">
+          <span class="relative">
+            <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M20 2H4a2 2 0 00-2 2v18l4-4h14a2 2 0 002-2V4a2 2 0 00-2-2z"/></svg>
+            <span class="badge absolute -right-2 -top-1 hidden" data-badge="chats">0</span>
+          </span>
+          Chats
+        </a>
+        <a href="/profile" data-nav="profile" class="tab">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M12 12a5 5 0 100-10 5 5 0 000 10zm0 2c-5 0-9 2.5-9 5.5V22h18v-2.5c0-3-4-5.5-9-5.5z"/></svg>
+          Profile
+        </a>
+      </nav>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/js/app-page.js"></script>
+</body>
+</html>

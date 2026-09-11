@@ -1,0 +1,325 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Profile — Ember</title>
+<meta name="description" content="Your Ember profile, photos and preferences." />
+<meta name="theme-color" content="#7B35A8" />
+<link rel="stylesheet" href="/css/app.css" />
+<link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%237B35A8'/%3E%3Cstop offset='100%25' stop-color='%23B03A93'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M50 88C25 70 8 55 8 36 8 22 19 12 32 12c8 0 15 4 18 10 3-6 10-10 18-10 13 0 24 10 24 24 0 19-17 34-42 52z'/%3E%3C/svg%3E" />
+</head>
+<body class="bg-surface-grey">
+<a href="#main" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-full focus:bg-surface focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-ink">Skip to content</a>
+
+<div class="app-shell">
+  <div class="app-frame">
+
+    <!-- ------------------------------------------------ sidebar (desktop) -->
+    <aside class="sidebar bg-surface">
+      <div class="flex items-center gap-2 border-b border-hairline/[var(--hairline-a)] px-5 py-4">
+        <a href="/app" class="flex items-center gap-2" aria-label="Ember">
+          <span class="grid h-9 w-9 place-items-center rounded-2xl bg-brand-gradient" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-white"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+          </span>
+          <span class="text-lg font-extrabold tracking-tight">Ember</span>
+        </a>
+      </div>
+      <nav class="flex flex-col gap-1 p-3" aria-label="Main">
+        <a href="/app" data-nav="app" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M13.5 1.5s.7 2.6-1 4.6c-1.6 2-3.4 2.6-3.4 5.2 0 1.3.7 2.3 1.6 2.8-.3-1.4.2-2.9 1.4-3.8-.2 2 1.2 3 2.3 4.1 1 1 1.1 2.4.6 3.4 2-.8 3.5-2.9 3.5-5.3 0-3-2-4.6-2.6-6.3-.5 1-1.4 1.6-1.4 1.6s.9-3.7-1-6.3zM8.6 14.4C7.6 15.4 7 16.8 7 18.3 7 20.9 9.2 23 12 23s5-2.1 5-4.7c0-.6-.1-1.2-.3-1.7-.6 2-2.5 3.4-4.7 3.4-1.8 0-2.9-1-3.1-2.4-.1-1 .1-2 .7-3.2z"/></svg>
+          Discover
+        </a>
+        <a href="/nearby" data-nav="nearby" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 2a7 7 0 00-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 00-7-7zm0 9.5A2.5 2.5 0 1112 6.5a2.5 2.5 0 010 5z"/></svg>
+          Nearby
+        </a>
+        <a href="/moments" data-nav="moments" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4zM9 2l-1.7 2H4a2 2 0 00-2 2v13a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2h-3.3L15 2H9zm3 4.8A5.2 5.2 0 1112 17.2 5.2 5.2 0 0112 6.8z"/></svg>
+          Moments
+        </a>
+        <button type="button" data-action="search" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-current" stroke-width="2" aria-hidden="true"><circle cx="11" cy="11" r="7"/><path d="M20 20l-3.5-3.5" stroke-linecap="round"/></svg>
+          Search by username
+          <kbd class="ml-auto rounded border border-line/[var(--line-a)] bg-surface-grey px-1.5 py-0.5 text-[11px] font-semibold text-ink-faint">/</kbd>
+        </button>
+        <button type="button" data-action="notifications" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-left text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 22a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 22zm7-6v-5a7 7 0 00-5.5-6.83V3.5a1.5 1.5 0 00-3 0v.67A7 7 0 005 11v5l-2 2v1h18v-1l-2-2z"/></svg>
+          Notifications
+          <span class="badge ml-auto hidden" data-badge="notifications">0</span>
+        </button>
+        <a href="/likes" data-nav="likes" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+          Likes
+          <span class="badge ml-auto hidden" data-badge="likes">0</span>
+        </a>
+        <a href="/matches" data-nav="matches" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M16.5 3c-1.7 0-3.3.8-4.5 2.1C10.8 3.8 9.2 3 7.5 3 4.4 3 2 5.5 2 8.5c0 3.9 4 7 9 10.5l1 .7 1-.7c5-3.5 9-6.6 9-10.5C22 5.5 19.6 3 16.5 3z"/></svg>
+          Matches
+          <span class="badge ml-auto hidden" data-badge="matches">0</span>
+        </a>
+        <a href="/chats" data-nav="chats" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M20 2H4a2 2 0 00-2 2v18l4-4h14a2 2 0 002-2V4a2 2 0 00-2-2z"/></svg>
+          Chats
+          <span class="badge ml-auto hidden" data-badge="chats">0</span>
+        </a>
+        <a href="/profile" data-nav="profile" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 12a5 5 0 100-10 5 5 0 000 10zm0 2c-5 0-9 2.5-9 5.5V22h18v-2.5c0-3-4-5.5-9-5.5z"/></svg>
+          Profile
+        </a>
+        <a href="/admin" data-nav="admin" data-staff-only class="hidden flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 2l8 3v6c0 5-3.4 9.4-8 11-4.6-1.6-8-6-8-11V5l8-3zm0 6a2 2 0 100 4 2 2 0 000-4zm0 5.5c-1.8 0-3.5.9-3.5 2v1h7v-1c0-1.1-1.7-2-3.5-2z"/></svg>
+          Moderation
+        </a>
+        <a href="/settings" data-nav="settings" class="flex items-center gap-3 rounded-2xl px-4 py-3 text-[15px] font-semibold text-ink-soft transition hover:bg-surface-grey aria-[current=page]:bg-brand-50 aria-[current=page]:text-brand-primary">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 8a4 4 0 100 8 4 4 0 000-8zm9.4 4a7.4 7.4 0 01-.1 1.2l2 1.6-2 3.4-2.4-1a7.5 7.5 0 01-2 1.2l-.4 2.6h-4l-.4-2.6a7.5 7.5 0 01-2-1.2l-2.4 1-2-3.4 2-1.6A7.4 7.4 0 012.6 12c0-.4 0-.8.1-1.2l-2-1.6 2-3.4 2.4 1a7.5 7.5 0 012-1.2L7.5 3h4l.4 2.6c.7.3 1.4.7 2 1.2l2.4-1 2 3.4-2 1.6c.1.4.1.8.1 1.2z"/></svg>
+          Settings
+        </a>
+      </nav>
+    </aside>
+
+    <!-- ----------------------------------------------------- profile pane -->
+    <main class="pane bg-surface-grey lg:rounded-r-4xl lg:bg-surface" id="main">
+
+      <header class="flex items-center gap-3 border-b border-hairline/[var(--hairline-a)] bg-surface px-4 py-3 safe-top lg:px-6">
+        <a href="/app" class="grid h-10 w-10 shrink-0 place-items-center rounded-full text-ink-soft transition hover:bg-surface-grey lg:hidden" aria-label="Back">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M15.4 7.4L14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+        </a>
+        <h1 class="flex-1 text-lg font-extrabold tracking-tight text-ink">Profile</h1>
+        <button type="button" data-action="theme" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"
+                class="theme-toggle">
+          <svg viewBox="0 0 24 24" class="h-[18px] w-[18px] fill-current" aria-hidden="true" data-theme-icon></svg>
+        </button>
+        <button type="button" data-action="notifications" class="relative grid h-9 w-9 place-items-center rounded-full text-ink-soft hover:bg-surface-grey" aria-label="Notifications">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 22a2.5 2.5 0 002.45-2h-4.9A2.5 2.5 0 0012 22zm7-6v-5a7 7 0 00-5.5-6.83V3.5a1.5 1.5 0 00-3 0v.67A7 7 0 005 11v5l-2 2v1h18v-1l-2-2z"/></svg>
+          <span class="badge absolute -right-0.5 -top-0.5 hidden" data-badge="notifications">0</span>
+        </button>
+        <button type="button" id="sign-out" data-action="logout" class="btn-ghost !px-3 !py-2 text-sm">Sign out</button>
+      </header>
+
+      <div class="scroll-area min-h-0 flex-1 overflow-y-auto">
+        <div class="mx-auto w-full max-w-[560px] px-4 pb-28 pt-5 lg:pb-10">
+
+          <!-- ------------------------------------------------ hero summary -->
+          <section class="flex flex-col items-center text-center">
+            <div class="relative">
+              <span class="block h-28 w-28 shrink-0 rounded-full bg-brand-gradient p-1">
+                <img id="me-avatar" src="" alt="" class="block h-full w-full rounded-full bg-surface object-cover" />
+              </span>
+              <button type="button" id="change-avatar" class="absolute bottom-0 right-0 grid h-9 w-9 place-items-center rounded-full bg-surface text-brand-primary shadow-action transition hover:scale-105 active:scale-95" aria-label="Add a photo">
+                <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M13 5h-2v6H5v2h6v6h2v-6h6v-2h-6z"/></svg>
+              </button>
+            </div>
+            <h2 id="me-name" class="mt-3.5 text-2xl font-extrabold tracking-tight text-ink">&nbsp;</h2>
+            <p id="me-handle" class="mt-0.5 text-[14px] font-semibold text-brand-primary">&nbsp;</p>
+            <p id="me-meta" class="mt-0.5 text-[15px] text-ink-soft">&nbsp;</p>
+
+            <dl class="mt-5 grid w-full grid-cols-3 gap-2.5">
+              <div class="rounded-3xl bg-surface p-3.5 shadow-card lg:bg-surface-grey lg:shadow-none">
+                <dt class="text-[12px] font-semibold uppercase tracking-wide text-ink-faint">Likes</dt>
+                <dd id="stat-likes" class="mt-0.5 text-xl font-extrabold text-brand-primary">0</dd>
+              </div>
+              <div class="rounded-3xl bg-surface p-3.5 shadow-card lg:bg-surface-grey lg:shadow-none">
+                <dt class="text-[12px] font-semibold uppercase tracking-wide text-ink-faint">Matches</dt>
+                <dd id="stat-matches" class="mt-0.5 text-xl font-extrabold text-ink">0</dd>
+              </div>
+              <div class="rounded-3xl bg-surface p-3.5 shadow-card lg:bg-surface-grey lg:shadow-none">
+                <dt class="text-[12px] font-semibold uppercase tracking-wide text-ink-faint">Photos</dt>
+                <dd id="stat-photos" class="mt-0.5 text-xl font-extrabold text-ink">0</dd>
+              </div>
+            </dl>
+          </section>
+
+          <!-- ------------------------------------------------------ photos -->
+          <section class="mt-7" aria-labelledby="photos-heading">
+            <div class="mb-2.5 flex items-baseline justify-between">
+              <h3 id="photos-heading" class="text-[15px] font-bold text-ink">Photos</h3>
+              <p class="text-[13px] text-ink-soft">Up to 6 &middot; first is your main</p>
+            </div>
+            <ul id="photo-grid" class="grid grid-cols-3 gap-2.5"></ul>
+            <p id="photo-hint" class="hint mt-2">Tap a photo to make it your main picture or remove it.</p>
+            <input type="file" id="photo-input" accept="image/jpeg,image/png,image/webp" class="sr-only" />
+            <div id="upload-progress" class="mt-3 hidden">
+              <div class="h-2 w-full overflow-hidden rounded-full bg-surface-cool">
+                <div id="upload-bar" class="h-full w-0 rounded-full bg-brand-gradient transition-[width]"></div>
+              </div>
+              <p class="hint mt-1.5">Uploading photo…</p>
+            </div>
+          </section>
+
+          <!-- ---------------------------------------------------- about me -->
+          <section class="mt-7" aria-labelledby="about-heading">
+            <h3 id="about-heading" class="mb-2.5 text-[15px] font-bold text-ink">About you</h3>
+            <form id="profile-form" class="rounded-4xl bg-surface p-5 shadow-card lg:bg-surface-grey lg:shadow-none" novalidate>
+
+              <div class="mb-4">
+                <label class="label" for="displayName">Display name</label>
+                <input class="field" type="text" id="displayName" name="displayName" maxlength="40" autocomplete="nickname" required />
+                <p class="error-text hidden" data-error-for="displayName"></p>
+              </div>
+
+              <div class="mb-4">
+                <label class="label" for="username">Username</label>
+                <div class="relative">
+                  <span class="pointer-events-none absolute left-4 top-1/2 -translate-y-1/2 text-[15px] font-semibold text-ink-soft" aria-hidden="true">@</span>
+                  <input class="field pl-8 pr-24" type="text" id="username" name="username" maxlength="30"
+                         autocomplete="username" autocapitalize="none" autocorrect="off" spellcheck="false" required
+                         aria-describedby="username-hint" />
+                  <span id="username-status" class="absolute right-4 top-1/2 -translate-y-1/2 text-[13px] font-semibold" aria-hidden="true"></span>
+                </div>
+                <p class="hint mt-1.5" id="username-hint">People can find you at this handle.</p>
+                <p class="error-text hidden" data-error-for="username"></p>
+                <p class="sr-only" id="username-live" role="status" aria-live="polite"></p>
+              </div>
+
+              <div class="mb-4">
+                <label class="label" for="bio">Bio</label>
+                <textarea class="field min-h-[104px] resize-y" id="bio" name="bio" maxlength="500" placeholder="Say something that starts a conversation…"></textarea>
+                <p class="hint mt-1.5"><span id="bio-count">0</span>/500</p>
+                <p class="error-text hidden" data-error-for="bio"></p>
+              </div>
+
+              <div class="mb-4">
+                <label class="label" for="city">City</label>
+                <input class="field" type="text" id="city" name="city" maxlength="80" autocomplete="address-level2" />
+                <p class="error-text hidden" data-error-for="city"></p>
+              </div>
+
+              <div class="mb-4">
+                <label class="label" for="birthdate">Birthday</label>
+                <input class="field" type="date" id="birthdate" name="birthdate" />
+                <p class="hint mt-1.5">Your age is shown on your card, never your exact date.</p>
+                <p class="error-text hidden" data-error-for="birthdate"></p>
+              </div>
+
+              <fieldset class="mb-4">
+                <legend class="label">I am</legend>
+                <div class="flex flex-wrap gap-2" role="group" aria-label="Gender">
+                  <button type="button" class="chip-option" data-field="gender" data-value="female" aria-pressed="false">A woman</button>
+                  <button type="button" class="chip-option" data-field="gender" data-value="male" aria-pressed="false">A man</button>
+                  <button type="button" class="chip-option" data-field="gender" data-value="other" aria-pressed="false">Non-binary</button>
+                </div>
+              </fieldset>
+
+              <fieldset class="mb-5">
+                <legend class="label">Show me</legend>
+                <div class="flex flex-wrap gap-2" role="group" aria-label="Interested in">
+                  <button type="button" class="chip-option" data-field="interestedIn" data-value="female" aria-pressed="false">Women</button>
+                  <button type="button" class="chip-option" data-field="interestedIn" data-value="male" aria-pressed="false">Men</button>
+                  <button type="button" class="chip-option" data-field="interestedIn" data-value="everyone" aria-pressed="false">Everyone</button>
+                </div>
+              </fieldset>
+
+              <fieldset class="mb-5">
+                <legend class="label">Looking for</legend>
+                <div class="flex flex-wrap gap-2" role="group" aria-label="What you are looking for">
+                  <button type="button" class="chip-option" data-field="intent" data-value="long_term" aria-pressed="false">Long-term</button>
+                  <button type="button" class="chip-option" data-field="intent" data-value="short_term" aria-pressed="false">Something casual</button>
+                  <button type="button" class="chip-option" data-field="intent" data-value="friends" aria-pressed="false">New friends</button>
+                  <button type="button" class="chip-option" data-field="intent" data-value="figuring_out" aria-pressed="false">Still figuring it out</button>
+                </div>
+              </fieldset>
+
+              <div class="mb-4 grid gap-4 sm:grid-cols-2">
+                <div>
+                  <label class="label" for="jobTitle">Job title</label>
+                  <input class="field" type="text" id="jobTitle" name="jobTitle" maxlength="80" autocomplete="organization-title" />
+                  <p class="error-text hidden" data-error-for="jobTitle"></p>
+                </div>
+                <div>
+                  <label class="label" for="school">School</label>
+                  <input class="field" type="text" id="school" name="school" maxlength="80" />
+                  <p class="error-text hidden" data-error-for="school"></p>
+                </div>
+              </div>
+
+              <div class="mb-5">
+                <label class="label" for="heightCm">Height (cm)</label>
+                <input class="field" type="number" id="heightCm" name="heightCm" min="120" max="250" inputmode="numeric" />
+                <p class="error-text hidden" data-error-for="heightCm"></p>
+              </div>
+
+              <button type="submit" id="save-profile" class="btn-primary btn-block">Save changes</button>
+            </form>
+          </section>
+
+          <!-- ------------------------------------------------- interests -->
+          <section class="mt-7" aria-labelledby="interests-heading">
+            <div class="mb-2.5 flex items-baseline justify-between">
+              <h3 id="interests-heading" class="text-[15px] font-bold text-ink">Interests</h3>
+              <span class="text-[12.5px] text-ink-soft"><span id="interest-count">0</span>/8</span>
+            </div>
+            <div class="rounded-4xl bg-surface p-5 shadow-card lg:bg-surface-grey lg:shadow-none">
+              <p class="hint mb-3">Pick up to 8. We highlight the ones you share with someone.</p>
+              <div id="interest-picker" class="space-y-4"></div>
+            </div>
+          </section>
+
+          <!-- --------------------------------------------------- prompts -->
+          <section class="mt-7" aria-labelledby="prompts-heading">
+            <h3 id="prompts-heading" class="mb-2.5 text-[15px] font-bold text-ink">Prompts</h3>
+            <div class="rounded-4xl bg-surface p-5 shadow-card lg:bg-surface-grey lg:shadow-none">
+              <p class="hint mb-3">Answer up to 3. These show on your profile and give people something to reply to.</p>
+              <div id="prompt-list" class="space-y-3"></div>
+              <button type="button" id="add-prompt" class="btn-ghost mt-3 !py-2 text-[13px]">Add a prompt</button>
+            </div>
+          </section>
+
+          <!-- ------------------------------------------------ danger zone -->
+          <section class="mt-7" aria-labelledby="account-heading">
+            <h3 id="account-heading" class="mb-2.5 text-[15px] font-bold text-ink">Account</h3>
+            <div class="overflow-hidden rounded-4xl bg-surface shadow-card lg:bg-surface-grey lg:shadow-none">
+              <button type="button" id="sign-out-2" data-action="logout" class="flex w-full items-center gap-3 px-5 py-4 text-left text-[15px] font-semibold text-ink transition hover:bg-surface-grey lg:hover:bg-surface-cool">
+                <svg viewBox="0 0 24 24" class="h-5 w-5 fill-ink-soft" aria-hidden="true"><path d="M10 17l1.4-1.4-2.6-2.6H20v-2H8.8l2.6-2.6L10 7l-5 5 5 5zm9-15H5a2 2 0 00-2 2v4h2V4h14v16H5v-4H3v4a2 2 0 002 2h14a2 2 0 002-2V4a2 2 0 00-2-2z"/></svg>
+                Sign out
+              </button>
+              <div class="h-px bg-hairline/[var(--track-a)]"></div>
+              <button type="button" id="delete-account" class="flex w-full items-center gap-3 px-5 py-4 text-left text-[15px] font-semibold text-nope transition hover:bg-brand-50">
+                <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+                Delete account
+              </button>
+            </div>
+            <p class="hint mt-2.5">Deleting your account removes your profile, photos, matches and messages immediately.</p>
+          </section>
+
+        </div>
+      </div>
+
+      <!-- ------------------------------------------------ mobile tab bar -->
+      <nav class="tabbar" aria-label="Main">
+        <a href="/app" data-nav="app" class="tab">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M13.5 1.5s.7 2.6-1 4.6c-1.6 2-3.4 2.6-3.4 5.2 0 1.3.7 2.3 1.6 2.8-.3-1.4.2-2.9 1.4-3.8-.2 2 1.2 3 2.3 4.1 1 1 1.1 2.4.6 3.4 2-.8 3.5-2.9 3.5-5.3 0-3-2-4.6-2.6-6.3-.5 1-1.4 1.6-1.4 1.6s.9-3.7-1-6.3zM8.6 14.4C7.6 15.4 7 16.8 7 18.3 7 20.9 9.2 23 12 23s5-2.1 5-4.7c0-.6-.1-1.2-.3-1.7-.6 2-2.5 3.4-4.7 3.4-1.8 0-2.9-1-3.1-2.4-.1-1 .1-2 .7-3.2z"/></svg>
+          Discover
+        </a>
+        <a href="/matches" data-nav="matches" class="tab">
+          <span class="relative">
+            <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M16.5 3c-1.7 0-3.3.8-4.5 2.1C10.8 3.8 9.2 3 7.5 3 4.4 3 2 5.5 2 8.5c0 3.9 4 7 9 10.5l1 .7 1-.7c5-3.5 9-6.6 9-10.5C22 5.5 19.6 3 16.5 3z"/></svg>
+            <span class="badge absolute -right-2 -top-1 hidden" data-badge="matches">0</span>
+          </span>
+          Matches
+        </a>
+        <a href="/moments" data-nav="moments" class="tab">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M12 15.2a3.2 3.2 0 100-6.4 3.2 3.2 0 000 6.4zM9 2l-1.7 2H4a2 2 0 00-2 2v13a2 2 0 002 2h16a2 2 0 002-2V6a2 2 0 00-2-2h-3.3L15 2H9zm3 4.8A5.2 5.2 0 1112 17.2 5.2 5.2 0 0112 6.8z"/></svg>
+          Moments
+        </a>
+        <a href="/chats" data-nav="chats" class="tab">
+          <span class="relative">
+            <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M20 2H4a2 2 0 00-2 2v18l4-4h14a2 2 0 002-2V4a2 2 0 00-2-2z"/></svg>
+            <span class="badge absolute -right-2 -top-1 hidden" data-badge="chats">0</span>
+          </span>
+          Chats
+        </a>
+        <a href="/profile" data-nav="profile" class="tab">
+          <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M12 12a5 5 0 100-10 5 5 0 000 10zm0 2c-5 0-9 2.5-9 5.5V22h18v-2.5c0-3-4-5.5-9-5.5z"/></svg>
+          Profile
+        </a>
+      </nav>
+
+    </main>
+  </div>
+</div>
+
+<script type="module" src="/js/profile.js"></script>
+</body>
+</html>

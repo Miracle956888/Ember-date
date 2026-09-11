@@ -1,0 +1,52 @@
+{
+  "name": "ephemeral-chat",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Swipe. Match. Chat - then it disappears. A Tinder-style dating chat app with 24-hour ephemeral messages, media sharing and WebRTC video calls.",
+  "type": "module",
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "main": "server/server.js",
+  "scripts": {
+    "dev": "concurrently -n \"CSS,SRV\" -c \"magenta,cyan\" \"npm:dev:css\" \"npm:dev:server\"",
+    "dev:css": "tailwindcss -i ./src/input.css -o ./public/css/app.css --watch",
+    "dev:server": "nodemon --watch server --ext js,json server/server.js",
+    "build:css": "tailwindcss -i ./src/input.css -o ./public/css/app.css --minify",
+    "build": "npm run build:css",
+    "start": "node server/server.js",
+    "db:migrate": "node db/migrate.js",
+    "db:seed": "node db/seed.js",
+    "db:reset": "node db/migrate.js --fresh && node db/seed.js",
+    "lint": "eslint \"server/**/*.js\" \"public/js/**/*.js\" \"db/**/*.js\"",
+    "lint:fix": "eslint --fix \"server/**/*.js\" \"public/js/**/*.js\" \"db/**/*.js\""
+  },
+  "dependencies": {
+    "bcryptjs": "^2.4.3",
+    "cookie": "^0.6.0",
+    "cookie-parser": "^1.4.6",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "express": "^4.19.2",
+    "express-rate-limit": "^7.4.0",
+    "file-type": "^19.5.0",
+    "fluent-ffmpeg": "^2.1.3",
+    "helmet": "^7.1.0",
+    "jsonwebtoken": "^9.0.2",
+    "multer": "^1.4.5-lts.1",
+    "mysql2": "^3.11.3",
+    "node-cron": "^3.0.3",
+    "sharp": "^0.33.5",
+    "socket.io": "^4.7.5",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.39.5",
+    "concurrently": "^9.0.1",
+    "eslint": "^9.10.0",
+    "globals": "^15.15.0",
+    "nodemon": "^3.1.4",
+    "socket.io-client": "^4.7.5",
+    "tailwindcss": "^3.4.13"
+  }
+}

@@ -1,0 +1,682 @@
+@import '../public/fonts/fonts.css';
+
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* ------------------------------------------------------------------ base */
+@layer base {
+  /* ---------------------------------------------------------------- theme
+     Semantic colours live here as space-separated RGB triples; tailwind.config.js
+     maps them onto `ink`/`surface`/`brand`/`hairline`, so every existing
+     `text-ink`, `bg-surface-grey`, `bg-brand-50` class re-themes with no markup
+     change. Only the tokens flip -- `text-white` on a photo scrim or a brand
+     gradient stays white in both themes, which is what we want. */
+  :root {
+    --brand-gradient: linear-gradient(90deg, #7b35a8 0%, #b03a93 100%);
+    --header-h: 60px;
+    --tabbar-h: 64px;
+
+    --c-brand-primary: 123 53 168;
+    --c-brand-accent: 176 58 147;
+    --c-brand-50: 247 241 251;
+    --c-brand-100: 237 224 246;
+    --c-brand-600: 123 53 168;
+    --c-brand-700: 99 41 127;
+
+    --c-ink: 17 20 24;
+    --c-ink-soft: 110 118 125;
+    --c-ink-faint: 154 161 168;
+
+    --c-surface: 255 255 255;
+    --c-surface-grey: 247 247 247;
+    --c-surface-cool: 239 241 242;
+    --c-surface-bubble: 241 241 241;
+
+    --c-hairline: 0 0 0;      /* used at low alpha for 1px rules */
+    --c-line: 0 0 0;
+    --c-track: 0 0 0;
+    --hairline-a: 0.05;
+    --line-a: 0.1;
+    --track-a: 0.06;
+
+    --shadow-card: rgba(0, 0, 0, 0.08);
+    --shadow-card-lg: rgba(0, 0, 0, 0.12);
+    --shadow-action: rgba(0, 0, 0, 0.12);
+    --shadow-bubble: rgba(0, 0, 0, 0.06);
+    --shadow-lift: rgba(0, 0, 0, 0.13);
+
+    --scrollbar-thumb: #d7dade;
+    color-scheme: light;
+  }
+
+  /* Dark theme: warm charcoal/plum, never cold blue-slate. Brand purple is
+     lifted so it keeps >=4.5:1 contrast on dark surfaces. */
+  .dark {
+    --c-brand-primary: 198 141 232;
+    --c-brand-accent: 226 148 205;
+    --c-brand-50: 45 32 56;      /* tinted "chip" background */
+    --c-brand-100: 58 41 72;
+    --c-brand-600: 198 141 232;
+    --c-brand-700: 226 190 245;  /* text on tinted chips */
+
+    --c-ink: 244 241 246;
+    --c-ink-soft: 174 170 181;
+    --c-ink-faint: 132 128 139;
+
+    --c-surface: 26 23 30;
+    --c-surface-grey: 37 33 42;
+    --c-surface-cool: 45 40 51;
+    --c-surface-bubble: 45 40 51;
+
+    --c-hairline: 255 255 255;
+    --c-line: 255 255 255;
+    --c-track: 255 255 255;
+    --hairline-a: 0.08;
+    --line-a: 0.14;
+    --track-a: 0.12;
+
+    --shadow-card: rgba(0, 0, 0, 0.5);
+    --shadow-card-lg: rgba(0, 0, 0, 0.6);
+    --shadow-action: rgba(0, 0, 0, 0.45);
+    --shadow-bubble: rgba(0, 0, 0, 0.35);
+    --shadow-lift: rgba(0, 0, 0, 0.55);
+
+    --scrollbar-thumb: #4a4453;
+    color-scheme: dark;
+  }
+
+  /* Repaint of the browser chrome + a soft cross-fade when the theme flips.
+     Suppressed for reduced-motion users and during the very first paint. */
+  html.theme-ready body,
+  html.theme-ready body * {
+    transition: background-color 0.22s ease, border-color 0.22s ease, color 0.22s ease;
+  }
+  @media (prefers-reduced-motion: reduce) {
+    html.theme-ready body,
+    html.theme-ready body * {
+      transition: none;
+    }
+  }
+
+  * {
+    -webkit-tap-highlight-color: transparent;
+  }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
+  body {
+    @apply bg-surface text-ink font-sans antialiased;
+    /* Never allow a sideways scrollbar at any breakpoint. */
+    overflow-x: hidden;
+  }
+
+  /* Visible, high-contrast focus ring for keyboard users only. */
+  :focus-visible {
+    @apply outline-none ring-2 ring-brand-primary ring-offset-2 ring-offset-surface rounded-lg;
+  }
+
+  h1, h2, h3, h4 {
+    @apply font-semibold tracking-tight;
+    font-family: 'Poppins', 'Inter', system-ui, sans-serif;
+  }
+
+  /* Inputs must be >=16px on iOS or Safari zooms the page on focus. */
+  input, textarea, select {
+    font-size: 16px;
+  }
+
+  ::placeholder {
+    @apply text-ink-faint;
+  }
+
+  /* Thin, unobtrusive scrollbars. */
+  .scroll-area {
+    scrollbar-width: thin;
+    scrollbar-color: var(--scrollbar-thumb) transparent;
+  }
+  .scroll-area::-webkit-scrollbar {
+    width: 6px;
+    height: 6px;
+  }
+  .scroll-area::-webkit-scrollbar-thumb {
+    @apply rounded-full;
+    background: var(--scrollbar-thumb);
+  }
+  .scroll-area::-webkit-scrollbar-track {
+    background: transparent;
+  }
+
+  [hidden] {
+    display: none !important;
+  }
+}
+
+/* ------------------------------------------------------------ components */
+@layer components {
+  /* --- layout shell ---------------------------------------------------- */
+  .app-shell {
+    @apply mx-auto w-full lg:max-w-[1100px] lg:px-6;
+  }
+
+  .app-frame {
+    height: 100dvh;
+    @apply flex flex-col overflow-hidden lg:h-[min(860px,calc(100dvh-3rem))] lg:my-6 lg:flex-row lg:rounded-4xl lg:border lg:border-hairline/[var(--hairline-a)] lg:bg-surface lg:shadow-card-lg;
+  }
+
+  .sidebar {
+    @apply hidden lg:flex lg:w-[380px] lg:shrink-0 lg:flex-col lg:border-r lg:border-hairline/[var(--hairline-a)];
+  }
+
+  /* min-h-0 matters: without it this flex child keeps its automatic minimum
+     size, grows to the height of the whole thread, and the inner scroll area
+     never scrolls (the header and composer scroll off the screen instead). */
+  .pane {
+    @apply relative flex min-h-0 min-w-0 flex-1 flex-col;
+  }
+
+  .safe-top {
+    padding-top: env(safe-area-inset-top);
+  }
+  .safe-bottom {
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+
+  /* --- buttons --------------------------------------------------------- */
+  .btn {
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-full px-6 py-3 text-[15px] font-semibold transition-all duration-200 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50;
+  }
+
+  .btn-primary {
+    @apply btn text-white shadow-action;
+    background-image: var(--brand-gradient);
+  }
+  .btn-primary:hover {
+    @apply -translate-y-0.5 shadow-card;
+  }
+
+  .btn-secondary {
+    @apply btn border border-line/[var(--line-a)] bg-surface text-ink hover:bg-surface-grey;
+  }
+
+  .btn-ghost {
+    @apply btn text-ink-soft hover:bg-surface-grey hover:text-ink;
+  }
+
+  .btn-danger {
+    @apply btn bg-nope text-white hover:brightness-95;
+  }
+
+  .btn-block {
+    @apply w-full;
+  }
+
+  /* Circular deck action buttons. */
+  .action-btn {
+    @apply grid place-items-center rounded-full border border-hairline/[var(--hairline-a)] bg-surface shadow-action transition-transform duration-200 hover:-translate-y-1 active:scale-90 disabled:pointer-events-none disabled:opacity-40;
+    width: 56px;
+    height: 56px;
+  }
+  .action-btn-lg {
+    width: 66px;
+    height: 66px;
+  }
+  .action-btn-sm {
+    width: 46px;
+    height: 46px;
+  }
+
+  /* --- form controls --------------------------------------------------- */
+  .field {
+    @apply w-full rounded-2xl border border-line/[var(--line-a)] bg-surface px-4 py-3 text-[15px] text-ink transition-shadow placeholder:text-ink-faint focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/25;
+  }
+  .field-error {
+    @apply border-nope focus:border-nope focus:ring-nope/25;
+  }
+  .label {
+    @apply mb-1.5 block text-sm font-medium text-ink;
+  }
+  .hint {
+    @apply mt-1.5 text-xs text-ink-soft;
+  }
+  .error-text {
+    @apply mt-1.5 text-xs font-medium text-nope;
+  }
+
+  /* Segmented pill selector (gender, interested-in). */
+  .chip-option {
+    @apply cursor-pointer rounded-full border border-line/[var(--line-a)] px-4 py-2 text-sm font-medium text-ink-soft transition-colors hover:border-brand-primary/40 hover:text-ink;
+  }
+  .chip-option[aria-pressed='true'],
+  input:checked + .chip-option {
+    @apply border-transparent text-white;
+    background-image: var(--brand-gradient);
+  }
+
+  /* --- segmented tabs (Nearby / Likes surfaces) ------------------------- */
+  .seg-tab {
+    @apply flex-1 whitespace-nowrap rounded-xl px-3 py-2 text-[13.5px] font-semibold text-ink-soft transition-colors;
+  }
+  .seg-tab:hover {
+    @apply text-ink;
+  }
+  .seg-tab.is-active {
+    @apply bg-surface text-brand-primary shadow-bubble;
+  }
+
+  /* --- person tile quick actions ---------------------------------------- */
+  .tile-action {
+    @apply grid h-8 w-8 place-items-center rounded-full text-ink-soft transition-colors;
+  }
+  .tile-action:hover {
+    @apply bg-surface-grey text-ink;
+  }
+  .tile-action.is-on {
+    @apply text-brand-primary;
+  }
+  .tile-action-like.is-on,
+  .tile-action-like:hover {
+    @apply bg-like/10 text-like;
+  }
+  .tile-action:disabled {
+    @apply cursor-not-allowed opacity-50;
+  }
+
+  /* --- settings rows ----------------------------------------------------- */
+  .toggle-row {
+    @apply flex cursor-pointer items-center justify-between gap-4 rounded-2xl px-1 py-2.5 transition-colors hover:bg-surface-grey;
+  }
+  .toggle-title {
+    @apply block text-[14px] font-semibold text-ink;
+  }
+  .toggle-note {
+    @apply mt-0.5 block text-[12.5px] leading-snug text-ink-soft;
+  }
+
+  /* iOS-style switch, built from a checkbox so it stays keyboard operable. */
+  .toggle {
+    @apply relative h-6 w-11 shrink-0 cursor-pointer appearance-none rounded-full bg-track/[var(--line-a)] transition-colors;
+  }
+  .toggle::after {
+    content: '';
+    @apply absolute left-0.5 top-0.5 h-5 w-5 rounded-full bg-surface shadow transition-transform;
+  }
+  .toggle:checked {
+    @apply bg-brand-primary;
+  }
+  .toggle:checked::after {
+    transform: translateX(1.25rem);
+  }
+  .toggle:focus-visible {
+    @apply outline-none ring-2 ring-brand-primary ring-offset-2;
+  }
+
+  /* --- shared location bubble in chat ------------------------------------ */
+  /* The parent bubble is `whitespace-pre-wrap` for message text; the card is
+     markup, so the newlines in it must not become rendered whitespace. */
+  .location-card {
+    @apply overflow-hidden rounded-2xl border border-hairline/[var(--hairline-a)] bg-surface whitespace-normal;
+  }
+  .location-map {
+    @apply relative block h-28 w-full overflow-hidden bg-surface-grey;
+  }
+  .location-map svg {
+    @apply block h-full w-full;
+  }
+  .live-pulse {
+    @apply absolute right-2 top-2 flex items-center gap-1 rounded-full bg-like px-2 py-0.5 text-[11px] font-bold text-white;
+  }
+  .live-pulse::before {
+    content: '';
+    @apply h-1.5 w-1.5 rounded-full bg-white;
+    animation: pulse-dot 1.4s ease-in-out infinite;
+  }
+  @keyframes pulse-dot {
+    0%, 100% { opacity: 1; }
+    50% { opacity: 0.25; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    .live-pulse::before { animation: none; }
+  }
+
+  /* --- safety notice ------------------------------------------------------ */
+  .safety-bar {
+    @apply mt-1 flex items-start gap-2 rounded-2xl bg-rewind/10 px-3 py-2 text-[12.5px] text-ink;
+  }
+
+  /* --- cards ----------------------------------------------------------- */
+  .swipe-card {
+    @apply absolute inset-0 overflow-hidden rounded-4xl bg-surface-cool shadow-card-lg;
+    will-change: transform;
+    touch-action: pan-y;
+    backface-visibility: hidden;
+  }
+
+  .card-scrim {
+    @apply pointer-events-none absolute inset-x-0 bottom-0 h-2/5;
+    background-image: linear-gradient(to top, rgba(0, 0, 0, 0.78), rgba(0, 0, 0, 0.28) 45%, transparent);
+  }
+
+  /* LIKE / NOPE stamps that fade in as you drag. */
+  .stamp {
+    @apply pointer-events-none absolute top-8 rounded-xl border-4 px-4 py-1.5 text-2xl font-extrabold uppercase tracking-wider opacity-0;
+  }
+  .stamp-like {
+    @apply left-6 -rotate-12 border-like text-like;
+  }
+  .stamp-nope {
+    @apply right-6 rotate-12 border-nope text-nope;
+  }
+  .stamp-super {
+    @apply inset-x-0 bottom-24 mx-auto w-max border-superlike text-superlike;
+  }
+
+  /* --- chat ------------------------------------------------------------ */
+  .bubble {
+    @apply relative max-w-[min(78%,32rem)] whitespace-pre-wrap break-words rounded-3xl px-4 py-2.5 text-[15px] leading-snug shadow-bubble;
+  }
+  .bubble-out {
+    @apply self-end rounded-br-md text-white;
+    background-image: var(--brand-gradient);
+  }
+  .bubble-in {
+    @apply self-start rounded-bl-md bg-surface-bubble text-ink;
+  }
+
+  /* Countdown chip states - Layer 4 of ephemerality. */
+  .ttl-chip {
+    @apply inline-flex items-center gap-1 rounded-full px-2 py-0.5 text-[11px] font-semibold tabular-nums transition-colors;
+    @apply bg-hairline/[var(--track-a)] text-ink-soft;
+  }
+  .ttl-chip[data-state='warn'] {
+    @apply bg-amber-100 text-amber-700;
+  }
+  .dark .ttl-chip[data-state='warn'] {
+    @apply bg-amber-400/15 text-amber-300;
+  }
+  .ttl-chip[data-state='urgent'] {
+    @apply bg-red-100 text-red-700;
+  }
+  .dark .ttl-chip[data-state='urgent'] {
+    @apply bg-red-500/20 text-red-300;
+  }
+  .bubble-out .ttl-chip {
+    @apply bg-white/25 text-white;
+  }
+  .bubble-out .ttl-chip[data-state='warn'] {
+    @apply bg-amber-300/90 text-amber-950;
+  }
+  .bubble-out .ttl-chip[data-state='urgent'] {
+    @apply bg-red-500 text-white;
+  }
+
+  /* Light/dark switch. Bordered so it reads as a control, not an icon. */
+  .theme-toggle {
+    @apply grid h-9 w-9 shrink-0 place-items-center rounded-full border border-hairline/[var(--line-a)]
+           bg-surface-grey text-ink-soft transition;
+  }
+  .theme-toggle:hover {
+    @apply border-brand-primary/40 bg-brand-50 text-brand-primary;
+  }
+
+  /* Destructive row inside a dropdown menu (report / block). */
+  .menu-item-danger {
+    @apply flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-[14px] font-medium text-red-600 transition hover:bg-red-50;
+  }
+  .dark .menu-item-danger {
+    @apply text-red-300 hover:bg-red-500/15;
+  }
+
+  .chip-option-danger {
+    @apply !border-red-200 !text-red-600;
+  }
+  .dark .chip-option-danger {
+    @apply !border-red-400/30 !text-red-300;
+  }
+
+  /* Inline form error banner (login / register). */
+  .form-error {
+    @apply rounded-2xl bg-red-50 px-4 py-3 text-sm font-medium text-red-700;
+  }
+  .dark .form-error {
+    @apply bg-red-500/15 text-red-300;
+  }
+
+  .typing-dot {
+    @apply inline-block h-1.5 w-1.5 rounded-full bg-ink-faint;
+    animation: dot-bounce 1.2s infinite ease-in-out;
+  }
+
+  /* --- misc ------------------------------------------------------------ */
+  .avatar {
+    @apply shrink-0 rounded-full bg-surface-cool object-cover;
+  }
+
+  input[type='range'] {
+    @apply h-1.5 cursor-pointer appearance-none rounded-full bg-track/[var(--track-a)];
+  }
+  input[type='range']::-webkit-slider-thumb {
+    @apply h-5 w-5 appearance-none rounded-full border-2 border-white bg-brand-primary shadow;
+  }
+  input[type='range']::-moz-range-thumb {
+    @apply h-5 w-5 rounded-full border-2 border-white bg-brand-primary shadow;
+  }
+  input[type='range']:focus-visible {
+    @apply outline-none ring-2 ring-brand-primary ring-offset-2;
+  }
+
+  .badge {
+    @apply inline-flex min-w-[20px] items-center justify-center rounded-full px-1.5 py-0.5 text-[11px] font-bold leading-none text-white;
+    background-image: var(--brand-gradient);
+  }
+
+  .online-dot {
+    @apply block h-3 w-3 rounded-full border-2 border-white bg-like;
+  }
+
+  .tabbar {
+    @apply flex items-stretch justify-around border-t border-hairline/[var(--hairline-a)] bg-white/95 backdrop-blur lg:hidden;
+    padding-bottom: env(safe-area-inset-bottom);
+  }
+  .tab {
+    @apply relative flex flex-1 flex-col items-center justify-center gap-0.5 py-2 text-[11px] font-medium text-ink-faint transition-colors;
+    min-height: 56px;
+  }
+  .tab[aria-current='page'] {
+    @apply text-brand-primary;
+  }
+
+  .brand-text {
+    background-image: var(--brand-gradient);
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+  }
+
+  .skeleton {
+    @apply relative overflow-hidden bg-surface-cool;
+  }
+  .skeleton::after {
+    @apply absolute inset-0;
+    content: '';
+    transform: translateX(-100%);
+    background-image: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.6), transparent);
+    animation: shimmer 1.6s infinite;
+  }
+
+  .toast {
+    @apply pointer-events-auto flex items-center gap-3 rounded-2xl bg-stage px-4 py-3 text-sm font-medium text-white shadow-card-lg;
+  }
+
+  /* Modal / sheet scaffolding. */
+  .backdrop {
+    @apply fixed inset-0 z-40 bg-black/45 backdrop-blur-[2px];
+  }
+  /* Centred WITHOUT a transform on purpose. `.animate-pop-in` finishes on
+     `transform: scale(1)` with fill-mode `both`, which would permanently
+     clobber a `-translate-x/y-1/2` centring trick and leave the panel hanging
+     off the bottom-right of the viewport. `inset-0 + margin:auto` centres a
+     fixed box using only the box model, so the animation cannot break it. */
+  .sheet {
+    @apply fixed inset-x-0 bottom-0 z-50 overflow-y-auto overscroll-contain rounded-t-4xl bg-surface p-6 shadow-card-lg sm:inset-0 sm:m-auto sm:h-fit sm:w-[min(440px,92vw)] sm:rounded-4xl;
+    padding-bottom: max(1.5rem, env(safe-area-inset-bottom));
+    /* A tall sheet (the composer with a poll open, the report reason list)
+       must scroll inside itself; without a cap its action buttons fall off
+       the screen and become unclickable. */
+    max-height: 88dvh;
+  }
+
+  /* --- call stage ------------------------------------------------------ */
+  /* The call is the one dark surface in the product: video reads better on
+     near-black, and it matches what every consumer calling app does. */
+  .call-stage {
+    height: 100dvh;
+    @apply relative w-full overflow-hidden bg-stage;
+  }
+
+  .call-remote {
+    @apply absolute inset-0 h-full w-full bg-stage object-cover;
+  }
+
+  .call-placeholder {
+    @apply absolute inset-0 flex flex-col items-center justify-center px-8 text-center;
+    background: radial-gradient(circle at 50% 35%, #2a2f36 0%, #111418 70%);
+  }
+
+  /* Soft brand halo behind the peer avatar while ringing. */
+  .call-avatar-ring {
+    @apply relative grid place-items-center rounded-full p-1.5;
+    background: linear-gradient(90deg, #7b35a8, #b03a93);
+  }
+  body[data-call-state='ringing'] .call-avatar-ring::after {
+    content: '';
+    @apply absolute inset-0 rounded-full;
+    box-shadow: 0 0 0 0 rgb(123 53 168 / 45%);
+    animation: pulse-ring 1.8s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+  }
+
+  .call-topbar {
+    @apply pointer-events-none absolute inset-x-0 top-0 z-20 flex items-start justify-between gap-3 px-4 pt-4;
+  }
+  .call-topbar > * {
+    @apply flex;
+  }
+
+  .call-local {
+    @apply absolute z-20 overflow-hidden rounded-3xl border-2 border-white/15 bg-stage shadow-card-lg transition-opacity;
+    right: 1rem;
+    top: 4.5rem;
+    width: 6.5rem;
+    height: 9.5rem;
+  }
+  @screen sm {
+    .call-local {
+      width: 9rem;
+      height: 13rem;
+    }
+  }
+  .call-local video {
+    @apply h-full w-full object-cover;
+    transform: scaleX(-1); /* mirror the self-view, like every other client */
+  }
+
+  .call-controls {
+    @apply absolute inset-x-0 bottom-0 z-30 px-6 pb-8 pt-16;
+    background: linear-gradient(to top, rgb(17 20 24 / 88%), transparent);
+  }
+
+  .call-btn {
+    @apply grid h-16 w-16 shrink-0 place-items-center rounded-full text-white transition
+           focus-visible:outline-none focus-visible:ring-4 focus-visible:ring-white/40 active:scale-95;
+  }
+  .call-btn-lg {
+    @apply h-[4.5rem] w-[4.5rem];
+  }
+  .call-btn-soft {
+    @apply bg-white/15 backdrop-blur-sm hover:bg-white/25;
+  }
+  .call-btn-soft[data-off='true'] {
+    /* The call stage is always dark, so this stays literal white in both themes. */
+    @apply bg-white hover:bg-white/90;
+    color: #111418;
+  }
+  .call-btn-end {
+    @apply bg-nope hover:brightness-110;
+  }
+  .call-btn-accept {
+    @apply bg-like hover:brightness-110;
+  }
+  /* The accept button asks for attention without shouting. */
+  body[data-call-state='ringing'] .call-btn-accept {
+    animation: pop 1.6s ease-in-out infinite;
+  }
+
+  .quality-dot {
+    @apply h-2.5 w-2.5 rounded-full bg-like;
+  }
+  .quality-dot[data-level='fair'] {
+    @apply bg-amber-400;
+  }
+  .quality-dot[data-level='poor'] {
+    @apply bg-nope;
+  }
+
+  .call-overlay {
+    @apply absolute inset-0 z-40 grid place-items-center bg-stage/80 px-6 backdrop-blur-sm;
+  }
+  .call-overlay-card {
+    @apply flex w-full max-w-sm flex-col items-center rounded-4xl bg-surface p-7 text-center shadow-card-lg;
+  }
+}
+
+/* -------------------------------------------------------------- utilities */
+@layer utilities {
+  .no-scrollbar::-webkit-scrollbar {
+    display: none;
+  }
+  .no-scrollbar {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .grab {
+    cursor: grab;
+  }
+  .grabbing {
+    cursor: grabbing;
+  }
+
+  .text-balance {
+    text-wrap: balance;
+  }
+
+  /* Screen-reader-only, but focusable for skip links. */
+  .sr-only-focusable:not(:focus):not(:focus-within) {
+    position: absolute;
+    width: 1px;
+    height: 1px;
+    padding: 0;
+    margin: -1px;
+    overflow: hidden;
+    clip: rect(0, 0, 0, 0);
+    white-space: nowrap;
+    border-width: 0;
+  }
+}
+
+/* --------------------------------------------------- reduced motion a11y */
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+  .skeleton::after {
+    animation: none;
+  }
+}

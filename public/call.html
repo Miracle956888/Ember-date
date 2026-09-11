@@ -1,0 +1,101 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Call — Ember</title>
+<meta name="description" content="A one-to-one call on Ember." />
+<meta name="theme-color" content="#111418" />
+<link rel="stylesheet" href="/css/app.css" />
+<link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%237B35A8'/%3E%3Cstop offset='100%25' stop-color='%23B03A93'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M50 88C25 70 8 55 8 36 8 22 19 12 32 12c8 0 15 4 18 10 3-6 10-10 18-10 13 0 24 10 24 24 0 19-17 34-42 52z'/%3E%3C/svg%3E" />
+</head>
+<body class="bg-stage">
+<a href="#call-controls" class="sr-only focus:not-sr-only focus:absolute focus:left-4 focus:top-4 focus:z-50 focus:rounded-full focus:bg-surface focus:px-4 focus:py-2 focus:text-sm focus:font-semibold focus:text-ink">Skip to call controls</a>
+
+<main class="call-stage" role="main" aria-label="Call">
+
+  <!-- ------------------------------------------------ remote video layer -->
+  <video id="remote-video" class="call-remote" autoplay playsinline></video>
+
+  <!-- Shown until the first remote frame arrives, and for the whole of an
+       audio-only call. -->
+  <div id="remote-placeholder" class="call-placeholder">
+    <span class="call-avatar-ring">
+      <img id="peer-avatar" src="" alt="" class="h-28 w-28 rounded-full object-cover" />
+    </span>
+    <h1 id="peer-name" class="mt-5 text-2xl font-extrabold text-white">&nbsp;</h1>
+    <p id="call-status" class="mt-1.5 text-[15px] font-medium text-white/70">Starting…</p>
+    <p id="mode-label" class="mt-6 text-[13px] uppercase tracking-widest text-white/40">Video call</p>
+  </div>
+
+  <!-- ------------------------------------------------------- top overlay -->
+  <div class="call-topbar safe-top">
+    <div class="flex items-center gap-2.5">
+      <span id="quality" class="hidden items-center gap-2 rounded-full bg-black/40 px-3 py-1.5 backdrop-blur-sm">
+        <span id="quality-dot" class="quality-dot" data-level="good" aria-hidden="true"></span>
+        <span id="quality-text" class="text-[12px] font-semibold text-white/90">Good connection</span>
+      </span>
+      <span id="muted-badge" class="hidden items-center gap-1.5 rounded-full bg-black/40 px-3 py-1.5 text-[12px] font-semibold text-white/90 backdrop-blur-sm">
+        <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-current" aria-hidden="true"><path d="M3.3 2L2 3.3l6 6V11a4 4 0 004 4c.5 0 1-.1 1.4-.3l1.5 1.5A6 6 0 016 11H4a8 8 0 003.9 6.9L4 21.7 5.3 23 21 7.3 19.7 6 3.3 2zM16 11a4 4 0 01-.5 1.9l1.5 1.5A6 6 0 0018 11h-2zM12 3a4 4 0 00-4 4v.2l8 8V7a4 4 0 00-4-4z"/></svg>
+        Muted
+      </span>
+    </div>
+    <span id="call-timer" class="hidden rounded-full bg-black/40 px-3 py-1.5 text-[13px] font-bold tabular-nums text-white backdrop-blur-sm">0:00</span>
+  </div>
+
+  <!-- ------------------------------------------------- local picture tile -->
+  <div id="local-tile" class="call-local hidden">
+    <video id="local-video" autoplay playsinline muted></video>
+  </div>
+
+  <!-- ---------------------------------------------------- control cluster -->
+  <div id="call-controls" class="call-controls safe-bottom">
+
+    <!-- callee, still ringing -->
+    <div id="ringing-actions" class="hidden items-center justify-center gap-10">
+      <button type="button" id="decline" class="call-btn call-btn-end" aria-label="Decline call">
+        <svg viewBox="0 0 24 24" class="h-7 w-7 fill-current" aria-hidden="true"><path d="M12 9c-1.6 0-3.2.3-4.7.7v3.1c0 .4-.2.7-.6.9-.9.5-1.8 1.1-2.6 1.8-.2.2-.4.3-.7.3s-.5-.1-.7-.3l-2.5-2.5a.9.9 0 01-.3-.7c0-.3.1-.5.3-.7C3.9 8.5 7.8 7 12 7s8.1 1.5 11.1 3.9c.2.2.3.4.3.7s-.1.5-.3.7l-2.5 2.5c-.2.2-.4.3-.7.3s-.5-.1-.7-.3c-.8-.7-1.7-1.3-2.6-1.8-.3-.2-.6-.5-.6-.9V9.7C15.2 9.3 13.6 9 12 9z"/></svg>
+      </button>
+      <button type="button" id="accept" class="call-btn call-btn-accept" aria-label="Accept call">
+        <svg viewBox="0 0 24 24" class="h-7 w-7 fill-current" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 006.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.2.4 2.4.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 013 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .8-.2 1l-2.3 2.2z"/></svg>
+      </button>
+    </div>
+
+    <!-- caller, or a connected call -->
+    <div id="active-actions" class="flex items-center justify-center gap-5">
+      <button type="button" id="toggle-mic" class="call-btn call-btn-soft" data-off="false" aria-pressed="false" aria-label="Mute microphone">
+        <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M12 15a3 3 0 003-3V6a3 3 0 10-6 0v6a3 3 0 003 3zm5-3a5 5 0 01-10 0H5a7 7 0 006 6.9V22h2v-3.1A7 7 0 0019 12h-2z"/></svg>
+      </button>
+
+      <button type="button" id="hangup" class="call-btn call-btn-end call-btn-lg" aria-label="End call">
+        <svg viewBox="0 0 24 24" class="h-8 w-8 fill-current" aria-hidden="true"><path d="M12 9c-1.6 0-3.2.3-4.7.7v3.1c0 .4-.2.7-.6.9-.9.5-1.8 1.1-2.6 1.8-.2.2-.4.3-.7.3s-.5-.1-.7-.3l-2.5-2.5a.9.9 0 01-.3-.7c0-.3.1-.5.3-.7C3.9 8.5 7.8 7 12 7s8.1 1.5 11.1 3.9c.2.2.3.4.3.7s-.1.5-.3.7l-2.5 2.5c-.2.2-.4.3-.7.3s-.5-.1-.7-.3c-.8-.7-1.7-1.3-2.6-1.8-.3-.2-.6-.5-.6-.9V9.7C15.2 9.3 13.6 9 12 9z"/></svg>
+      </button>
+
+      <button type="button" id="toggle-camera" class="call-btn call-btn-soft" data-off="false" aria-pressed="false" aria-label="Turn camera off">
+        <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <!-- ----------------------------------------------------- end / error UI -->
+  <div id="call-overlay" class="call-overlay hidden" role="alertdialog" aria-labelledby="overlay-title" aria-describedby="overlay-message">
+    <div class="call-overlay-card">
+      <span class="grid h-16 w-16 place-items-center rounded-full bg-brand-50" aria-hidden="true">
+        <svg viewBox="0 0 24 24" class="h-8 w-8 fill-brand-primary"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+      </span>
+      <h2 id="overlay-title" class="mt-4 text-xl font-extrabold text-ink">Call ended</h2>
+      <p id="overlay-message" class="mt-1.5 text-[15px] leading-relaxed text-ink-soft"></p>
+      <div class="mt-6 flex w-full flex-col gap-2.5">
+        <button type="button" id="overlay-again" class="btn-primary btn-block">Call again</button>
+        <button type="button" id="overlay-back" class="btn-secondary btn-block">Back to chat</button>
+      </div>
+    </div>
+  </div>
+
+  <p id="call-announcer" class="sr-only" role="status" aria-live="polite"></p>
+</main>
+
+<script type="module" src="/js/call-page.js"></script>
+</body>
+</html>

@@ -1,0 +1,68 @@
+services:
+  db:
+    image: mysql:8.0
+    container_name: ember-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:-rootpass}
+      MYSQL_DATABASE: ${DB_NAME:-ephemeral_chat}
+      MYSQL_USER: ${DB_USER:-ecuser}
+      MYSQL_PASSWORD: ${DB_PASSWORD:-ecpass}
+    # utf8mb4 end to end, so emoji in messages round-trip correctly.
+    command: >
+      --character-set-server=utf8mb4
+      --collation-server=utf8mb4_0900_ai_ci
+      --default-authentication-plugin=caching_sha2_password
+    ports:
+      - '${DB_PORT_HOST:-3307}:3306'
+    volumes:
+      - db-data:/var/lib/mysql
+    healthcheck:
+      # The app must not start migrating before MySQL accepts connections.
+      test: ['CMD', 'mysqladmin', 'ping', '-h', '127.0.0.1', '-p${MYSQL_ROOT_PASSWORD:-rootpass}']
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 30s
+
+  app:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: ember-app
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      NODE_ENV: production
+      PORT: 3000
+      APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
+      DB_HOST: db
+      DB_PORT: 3306
+      DB_NAME: ${DB_NAME:-ephemeral_chat}
+      DB_USER: ${DB_USER:-ecuser}
+      DB_PASSWORD: ${DB_PASSWORD:-ecpass}
+      # Generate real values before any real deployment:
+      #   node -e "console.log(require('crypto').randomBytes(32).toString('hex'))"
+      JWT_ACCESS_SECRET: ${JWT_ACCESS_SECRET:?set JWT_ACCESS_SECRET in .env}
+      JWT_REFRESH_SECRET: ${JWT_REFRESH_SECRET:?set JWT_REFRESH_SECRET in .env}
+      MESSAGE_TTL_HOURS: ${MESSAGE_TTL_HOURS:-24}
+      MAX_IMAGE_MB: ${MAX_IMAGE_MB:-10}
+      MAX_VIDEO_MB: ${MAX_VIDEO_MB:-50}
+      UPLOAD_DIR: /app/uploads
+      TURN_URL: ${TURN_URL:-}
+      TURN_USERNAME: ${TURN_USERNAME:-}
+      TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+    ports:
+      - '${PORT:-3000}:3000'
+    volumes:
+      # Uploaded media survives container rebuilds.
+      - uploads:/app/uploads
+    # Apply the schema (idempotent), seed demo data, then serve.
+    command: >
+      sh -c "node db/migrate.js && node db/seed.js && node server/server.js"
+
+volumes:
+  db-data:
+  uploads:

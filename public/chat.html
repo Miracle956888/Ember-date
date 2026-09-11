@@ -1,0 +1,190 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Chat — Ember</title>
+<meta name="description" content="An ephemeral conversation on Ember." />
+<meta name="theme-color" content="#7B35A8" />
+<link rel="stylesheet" href="/css/app.css" />
+<link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%237B35A8'/%3E%3Cstop offset='100%25' stop-color='%23B03A93'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M50 88C25 70 8 55 8 36 8 22 19 12 32 12c8 0 15 4 18 10 3-6 10-10 18-10 13 0 24 10 24 24 0 19-17 34-42 52z'/%3E%3C/svg%3E" />
+</head>
+<body class="bg-surface-grey">
+<div class="app-shell">
+  <div class="app-frame">
+
+    <!-- --------------------------------------------- sidebar (desktop) -->
+    <aside class="sidebar bg-surface">
+      <div class="flex items-center justify-between border-b border-hairline/[var(--hairline-a)] px-5 py-4">
+        <a href="/app" class="flex items-center gap-2" aria-label="Ember">
+          <span class="grid h-9 w-9 place-items-center rounded-2xl bg-brand-gradient" aria-hidden="true">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-white"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+          </span>
+          <span class="text-lg font-extrabold tracking-tight">Ember</span>
+        </a>
+        <div class="flex items-center gap-1">
+          <button type="button" data-action="theme" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"
+                  class="theme-toggle">
+            <svg viewBox="0 0 24 24" class="h-[18px] w-[18px] fill-current" aria-hidden="true" data-theme-icon></svg>
+          </button>
+          <a href="/matches" class="btn-ghost !px-3 !py-2 text-sm">All matches</a>
+        </div>
+      </div>
+      <div class="scroll-area min-h-0 flex-1 overflow-y-auto">
+        <ul id="sidebar-conversations" class="divide-y divide-hairline/[var(--hairline-a)]"></ul>
+      </div>
+      <div class="border-t border-hairline/[var(--hairline-a)] p-4">
+        <a href="/profile" class="flex items-center gap-3 rounded-2xl p-2 transition hover:bg-surface-grey">
+          <img data-me-avatar src="" alt="" class="avatar h-10 w-10" />
+          <span class="min-w-0 flex-1 truncate text-sm font-semibold text-ink" data-me-name>&nbsp;</span>
+        </a>
+      </div>
+    </aside>
+
+    <!-- ------------------------------------------------------ chat pane -->
+    <div class="pane bg-surface lg:rounded-r-4xl" id="chat-pane">
+
+      <!-- header -->
+      <header class="flex items-center gap-3 border-b border-hairline/[var(--hairline-a)] px-3 py-2.5 safe-top lg:px-5 lg:py-3">
+        <a href="/matches" class="grid h-10 w-10 shrink-0 place-items-center rounded-full text-ink-soft transition hover:bg-surface-grey lg:hidden" aria-label="Back to matches">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M15.4 7.4L14 6l-6 6 6 6 1.4-1.4-4.6-4.6z"/></svg>
+        </a>
+
+        <button type="button" id="menu-profile" class="flex min-w-0 flex-1 items-center gap-3 rounded-2xl p-1 text-left transition hover:bg-surface-grey">
+          <span class="relative shrink-0">
+            <img id="peer-avatar" src="" alt="" class="avatar h-10 w-10" />
+            <span id="peer-online" class="online-dot absolute bottom-0 right-0 hidden"></span>
+          </span>
+          <span class="min-w-0">
+            <span id="peer-name" class="block truncate font-bold text-ink">&nbsp;</span>
+            <span id="peer-status" class="block text-[12px] text-ink-soft">&nbsp;</span>
+          </span>
+        </button>
+
+        <button type="button" id="call-audio" class="grid h-10 w-10 shrink-0 place-items-center rounded-full text-ink-soft transition hover:bg-surface-grey hover:text-brand-primary" aria-label="Start a voice call">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M6.6 10.8a15.1 15.1 0 006.6 6.6l2.2-2.2c.3-.3.7-.4 1-.2 1.2.4 2.4.6 3.6.6.6 0 1 .4 1 1V20c0 .6-.4 1-1 1A17 17 0 013 4c0-.6.4-1 1-1h3.5c.6 0 1 .4 1 1 0 1.3.2 2.5.6 3.6.1.4 0 .8-.2 1l-2.3 2.2z"/></svg>
+        </button>
+        <button type="button" id="call-video" class="grid h-10 w-10 shrink-0 place-items-center rounded-full text-ink-soft transition hover:bg-surface-grey hover:text-brand-primary" aria-label="Start a video call">
+          <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M17 10.5V7a1 1 0 00-1-1H4a1 1 0 00-1 1v10a1 1 0 001 1h12a1 1 0 001-1v-3.5l4 4v-11l-4 4z"/></svg>
+        </button>
+
+        <div class="relative shrink-0">
+          <button type="button" id="menu-button" class="grid h-10 w-10 place-items-center rounded-full text-ink-soft transition hover:bg-surface-grey"
+                  aria-label="Conversation options" aria-haspopup="menu" aria-expanded="false">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M12 8a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4zm0 6a2 2 0 110-4 2 2 0 010 4z"/></svg>
+          </button>
+          <div id="chat-menu" role="menu" aria-labelledby="menu-button"
+               class="absolute right-0 top-full z-40 mt-1 hidden w-56 overflow-hidden rounded-2xl border border-hairline/[var(--hairline-a)] bg-surface py-1.5 shadow-card-lg">
+            <button type="button" role="menuitem" id="menu-timer" class="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-[14px] font-medium text-ink transition hover:bg-surface-grey">
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-ink-soft" aria-hidden="true"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5v6l4.5 2.7-.8 1.3L11 14V7h2z"/></svg>
+              Disappearing messages
+            </button>
+            <button type="button" role="menuitem" id="menu-encryption" class="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-[14px] font-medium text-ink transition hover:bg-surface-grey">
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-ink-soft" aria-hidden="true"><path d="M12 1a5 5 0 00-5 5v3H6a2 2 0 00-2 2v9a2 2 0 002 2h12a2 2 0 002-2v-9a2 2 0 00-2-2h-1V6a5 5 0 00-5-5zm3 8H9V6a3 3 0 016 0v3z"/></svg>
+              Encryption details
+            </button>
+            <div class="my-1 h-px bg-hairline/[var(--hairline-a)]"></div>
+            <button type="button" role="menuitem" id="menu-clear" class="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-[14px] font-medium text-ink transition hover:bg-surface-grey">
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-ink-soft" aria-hidden="true"><path d="M6 19a2 2 0 002 2h8a2 2 0 002-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+              Clear chat now
+            </button>
+            <button type="button" role="menuitem" id="menu-unmatch" class="flex w-full items-center gap-2.5 px-4 py-2.5 text-left text-[14px] font-medium text-ink transition hover:bg-surface-grey">
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-ink-soft" aria-hidden="true"><path d="M16.5 3a5.5 5.5 0 00-4.5 2.4A5.5 5.5 0 007.5 3 5.5 5.5 0 002 8.5C2 14 12 21 12 21s10-7 10-12.5A5.5 5.5 0 0016.5 3zM8 10h8v2H8v-2z"/></svg>
+              Unmatch
+            </button>
+            <div class="my-1 border-t border-hairline/[var(--hairline-a)]"></div>
+            <button type="button" role="menuitem" id="menu-report" class="menu-item-danger">
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true"><path d="M4 2h2v20H4V2zm4 2h11l-2.5 4L19 14H8V4z"/></svg>
+              Report
+            </button>
+            <button type="button" role="menuitem" id="menu-block" class="menu-item-danger">
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" aria-hidden="true"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zM4 12a8 8 0 0112.9-6.3L5.7 16.9A7.9 7.9 0 014 12zm8 8a7.9 7.9 0 01-4.9-1.7L18.3 7.1A8 8 0 0112 20z"/></svg>
+              Block
+            </button>
+          </div>
+        </div>
+      </header>
+
+      <!-- persistent 24h banner (ephemerality layer 4) -->
+      <div class="flex items-center gap-2 border-b border-brand-100 bg-brand-50 px-4 py-2 text-brand-700">
+        <svg viewBox="0 0 24 24" class="h-4 w-4 shrink-0 fill-current" aria-hidden="true"><path d="M12 2a10 10 0 100 20 10 10 0 000-20zm1 5v6l4.5 2.7-.8 1.3L11 14V7h2z"/></svg>
+        <p class="min-w-0 flex-1 text-[12.5px] font-medium leading-tight">
+          Messages disappear <span id="ttl-banner-hours">24</span> hours after they are sent.
+          <span id="next-expiry" class="hidden font-semibold tabular-nums sm:inline"></span>
+        </p>
+        <button type="button" id="e2ee-badge"
+                class="shrink-0 rounded-full bg-brand-100 px-2.5 py-1 text-[11px] font-bold text-brand-700 transition hover:bg-brand-200"
+                aria-label="Encryption details">Checking…</button>
+      </div>
+
+      <!-- messages -->
+      <div id="messages" class="scroll-area flex min-h-0 flex-1 flex-col gap-2 overflow-y-auto px-3 py-4 lg:px-6"
+           role="list" aria-label="Messages" aria-live="polite" aria-relevant="additions removals">
+        <div class="mx-auto my-2 h-4 w-40 rounded-full skeleton" aria-hidden="true"></div>
+      </div>
+
+      <p id="chat-announcer" class="sr-only" role="status" aria-live="polite"></p>
+
+      <!-- load-earlier lives above the list but is pinned by flex order -->
+      <button type="button" id="load-more"
+              class="order-first mx-auto mb-1 mt-3 hidden rounded-full border border-line/[var(--line-a)] bg-surface px-4 py-1.5 text-[13px] font-semibold text-ink-soft transition hover:bg-surface-grey">
+        Load earlier messages
+      </button>
+
+      <!-- typing + jump-to-latest -->
+      <div class="relative">
+        <div id="typing-indicator" class="hidden px-5 pb-1">
+          <span class="inline-flex items-center gap-1 rounded-full bg-surface-bubble px-3 py-2">
+            <span class="typing-dot"></span>
+            <span class="typing-dot" style="animation-delay:.15s"></span>
+            <span class="typing-dot" style="animation-delay:.3s"></span>
+            <span class="sr-only">Typing…</span>
+          </span>
+        </div>
+        <button type="button" id="jump-latest"
+                class="absolute -top-12 left-1/2 hidden -translate-x-1/2 rounded-full bg-stage px-4 py-2 text-[13px] font-semibold text-white shadow-card">
+          New messages ↓
+        </button>
+      </div>
+
+      <!-- composer -->
+      <div class="border-t border-hairline/[var(--hairline-a)] px-3 py-2.5 safe-bottom lg:px-5">
+        <div id="live-share-bar" class="mb-2 hidden items-center gap-2 rounded-2xl bg-like/10 px-3 py-2">
+          <span class="live-pulse !relative !right-auto !top-auto">LIVE</span>
+          <span class="flex-1 text-[13px] font-semibold text-ink" id="live-share-text">Sharing your live location</span>
+          <button type="button" class="text-[13px] font-bold text-nope" id="live-share-stop">Stop</button>
+        </div>
+        <div id="attachment-preview" class="mb-2 hidden"></div>
+        <form id="composer" class="flex items-end gap-2">
+          <label for="attach" class="grid h-11 w-11 shrink-0 cursor-pointer place-items-center rounded-full text-ink-soft transition hover:bg-surface-grey hover:text-brand-primary"
+                 title="Attach a photo or video">
+            <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M16.5 6v11.5a4 4 0 11-8 0V5a2.5 2.5 0 115 0v11.5a1 1 0 11-2 0V6H10v10.5a2.5 2.5 0 105 0V5a4 4 0 10-8 0v12.5a5.5 5.5 0 1011 0V6h-1.5z"/></svg>
+            <span class="sr-only">Attach a photo or video</span>
+          </label>
+          <input type="file" id="attach" accept="image/jpeg,image/png,image/webp,image/gif,video/mp4,video/webm,video/quicktime" class="sr-only" />
+
+          <button type="button" id="share-location"
+                  class="grid h-11 w-11 shrink-0 place-items-center rounded-full text-ink-soft transition hover:bg-surface-grey hover:text-brand-primary"
+                  title="Share your location" aria-label="Share your location">
+            <svg viewBox="0 0 24 24" class="h-6 w-6 fill-current" aria-hidden="true"><path d="M12 2a7 7 0 00-7 7c0 5.2 7 13 7 13s7-7.8 7-13a7 7 0 00-7-7zm0 9.5A2.5 2.5 0 1112 6.5a2.5 2.5 0 010 5z"/></svg>
+          </button>
+
+          <label for="message-input" class="sr-only">Message</label>
+          <textarea id="message-input" rows="1" maxlength="2000" placeholder="Say something…"
+                    class="max-h-[132px] min-h-[44px] flex-1 resize-none rounded-3xl border border-line/[var(--line-a)] bg-surface px-4 py-2.5 text-[15px] leading-snug text-ink transition-shadow placeholder:text-ink-faint focus:border-brand-primary focus:outline-none focus:ring-2 focus:ring-brand-primary/25"></textarea>
+
+          <button type="submit" id="send" disabled
+                  class="grid h-11 w-11 shrink-0 place-items-center rounded-full bg-brand-gradient text-white shadow-action transition disabled:opacity-40"
+                  aria-label="Send message">
+            <svg viewBox="0 0 24 24" class="h-5 w-5 fill-current" aria-hidden="true"><path d="M2 21l21-9L2 3v7l15 2-15 2v7z"/></svg>
+          </button>
+        </form>
+      </div>
+    </div>
+  </div>
+</div>
+
+<script type="module" src="/js/chat-page.js"></script>
+</body>
+</html>

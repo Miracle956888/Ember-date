@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<title>Log in — Ember</title>
+<meta name="description" content="Log in to Ember." />
+<meta name="theme-color" content="#7B35A8" />
+<link rel="stylesheet" href="/css/app.css" />
+<link rel="preload" href="/fonts/inter-var.woff2" as="font" type="font/woff2" crossorigin />
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'%3E%3Cdefs%3E%3ClinearGradient id='g' x1='0' y1='0' x2='1' y2='1'%3E%3Cstop offset='0%25' stop-color='%237B35A8'/%3E%3Cstop offset='100%25' stop-color='%23B03A93'/%3E%3C/linearGradient%3E%3C/defs%3E%3Cpath fill='url(%23g)' d='M50 88C25 70 8 55 8 36 8 22 19 12 32 12c8 0 15 4 18 10 3-6 10-10 18-10 13 0 24 10 24 24 0 19-17 34-42 52z'/%3E%3C/svg%3E" />
+</head>
+<body class="min-h-[100dvh] bg-surface">
+<div class="fixed right-4 top-4 z-40">
+  <button type="button" data-action="theme" aria-pressed="false" aria-label="Switch to dark mode" title="Switch to dark mode"
+          class="theme-toggle h-10 w-10 shadow-action">
+    <svg viewBox="0 0 24 24" class="h-[18px] w-[18px] fill-current" aria-hidden="true" data-theme-icon></svg>
+  </button>
+</div>
+<main class="mx-auto flex min-h-[100dvh] max-w-[1100px] items-center justify-center px-5 py-10">
+  <div class="w-full max-w-[420px]">
+
+    <a href="/" class="mb-8 flex items-center justify-center gap-2" aria-label="Ember home">
+      <span class="grid h-10 w-10 place-items-center rounded-2xl bg-brand-gradient" aria-hidden="true">
+        <svg viewBox="0 0 24 24" class="h-5 w-5 fill-white"><path d="M12 21C7 17.5 3 14.4 3 10.5 3 7.5 5.4 5 8.5 5c1.7 0 3.3.8 4.3 2.1C13.8 5.8 15.4 5 17 5c3.1 0 5.5 2.5 5.5 5.5C22.5 14.4 18.5 17.5 13.5 21L12 22l-1.5-1z"/></svg>
+      </span>
+      <span class="text-2xl font-extrabold tracking-tight">Ember</span>
+    </a>
+
+    <h1 class="text-center text-3xl font-extrabold tracking-tight">Welcome back</h1>
+    <p class="mt-2 text-center text-[15px] text-ink-soft">Log in to pick up where you left off.</p>
+
+    <div id="form-error" class="mt-6 hidden form-error" role="alert"></div>
+
+    <form id="login-form" class="mt-6 space-y-4" novalidate>
+      <div>
+        <label class="label" for="email">Email</label>
+        <input class="field" type="email" id="email" name="email" autocomplete="email"
+               inputmode="email" required placeholder="you@example.com" aria-describedby="email-error" />
+        <p class="error-text hidden" id="email-error"></p>
+      </div>
+
+      <div>
+        <label class="label" for="password">Password</label>
+        <div class="relative">
+          <input class="field pr-12" type="password" id="password" name="password"
+                 autocomplete="current-password" required placeholder="Your password" aria-describedby="password-error" />
+          <button type="button" id="toggle-password"
+                  class="absolute right-1.5 top-1/2 grid h-9 w-9 -translate-y-1/2 place-items-center rounded-full text-ink-soft hover:bg-surface-grey"
+                  aria-label="Show password" aria-pressed="false">
+            <svg viewBox="0 0 24 24" class="h-5 w-5" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true">
+              <path d="M2 12s3.6-7 10-7 10 7 10 7-3.6 7-10 7-10-7-10-7z"/><circle cx="12" cy="12" r="3"/>
+            </svg>
+          </button>
+        </div>
+        <p class="error-text hidden" id="password-error"></p>
+      </div>
+
+      <button type="submit" id="submit" class="btn-primary btn-block !py-4 text-base">Log in</button>
+    </form>
+
+    <p class="mt-6 text-center text-[15px] text-ink-soft">
+      New here? <a href="/register" class="font-semibold text-brand-primary hover:underline">Create an account</a>
+    </p>
+
+    <!-- Demo accounts: this is a portfolio/demo build, so make it easy to try. -->
+    <section class="mt-10 rounded-3xl border border-hairline/[var(--hairline-a)] bg-surface-grey p-5" aria-labelledby="demo-heading">
+      <h2 id="demo-heading" class="text-sm font-bold text-ink">Try a demo account</h2>
+      <p class="mt-1 text-[13px] leading-relaxed text-ink-soft">
+        Open two of these in different browsers to test chat and video calls. Password for all:
+        <code class="rounded bg-surface px-1.5 py-0.5 font-semibold">Password123!</code>
+      </p>
+      <div class="mt-3 grid grid-cols-2 gap-2">
+        <button type="button" class="chip-option text-left" data-demo="amara@example.com">Amara <span class="text-ink-faint">· matched</span></button>
+        <button type="button" class="chip-option text-left" data-demo="tunde@example.com">Tunde <span class="text-ink-faint">· matched</span></button>
+        <button type="button" class="chip-option text-left" data-demo="ngozi@example.com">Ngozi</button>
+        <button type="button" class="chip-option text-left" data-demo="kelechi@example.com">Kelechi</button>
+      </div>
+    </section>
+  </div>
+</main>
+
+<script type="module" src="/js/login.js"></script>
+</body>
+</html>
