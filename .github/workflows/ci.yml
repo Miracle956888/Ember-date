@@ -79,6 +79,9 @@ jobs:
   deploy-verify:
     name: Boot the real app on MySQL 8 and sweep it
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the failure report above
     # A second job rather than more steps in `checks`: this one needs a database,
     # and when it fails the thing to read is the app log, not a lint diff.
     services:
@@ -254,9 +257,35 @@ jobs:
             seed-prod.log
             check.log
 
+      # The runner's own log lives on a host some environments cannot reach (this
+      # repo's sandbox could not), and a UI click is not always available. Mirror the
+      # tail of whatever the failing step captured onto the PR, where it is readable
+      # from a phone. Only the log tails already visible in the Actions UI.
+      - name: Report the failure on the pull request
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            printf '### `%s` failed on %s\n\n```\n' "${{ github.job }}" "${GITHUB_SHA:0:7}"
+            for f in image-check.log server.log prod.log seed-prod.log check.log migrate-refuse.log migrate-fresh.log; do
+              if [ -f "$f" ]; then
+                printf -- '----- %s -----\n' "$f"
+                tail -n 50 "$f"
+              fi
+            done
+            printf '```\n'
+          } > "$RUNNER_TEMP/report.md"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/comments" \
+            -F body="@$RUNNER_TEMP/report.md" || echo "could not post the report"
+
+
   docker:
     name: Image builds and serves /api/health
     runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write # the failure report above
     steps:
       - uses: actions/checkout@v4
 
@@ -268,30 +297,51 @@ jobs:
         # it - if that COPY ever breaks, every page ships unstyled and the image
         # still "builds fine". This is the check for that.
         #
-        # The script is piped in rather than quoted inline, for two reasons learned
-        # the hard way here: require("<dep>/package.json") throws
-        # ERR_PACKAGE_PATH_NOT_EXPORTED for sharp / node-cron / file-type (their
-        # "exports" maps hide the file), which looks identical to a missing
-        # dependency, and a single quote inside an inline sh -c "..." closes the
-        # quoting of the whole -c argument, so the container runs half a script.
-        # A quoted heredoc expands nothing in the runner and needs no escaping.
+        # The dependency list is read out of package.json rather than typed here,
+        # because a hand-written list drifted almost immediately: it asked for
+        # node_modules/bcrypt when the app depends on bcryptjs, and the job failed
+        # on a correct image. Every direct dependency must resolve, and dev
+        # dependencies must not be present.
+        #
+        # Script is piped in through a quoted heredoc, not quoted inline: a single
+        # quote inside `sh -c "..."` closes the -c argument and hands the container
+        # half a program, and require("<dep>/package.json") would throw
+        # ERR_PACKAGE_PATH_NOT_EXPORTED for sharp / node-cron / file-type, which
+        # looks exactly like a missing dependency. Reading the manifest by path
+        # skips the exports map entirely.
         run: |
           cat > image-check.sh <<'EOF'
           set -e
           cd /app
           test -s public/css/app.css || { echo "public/css/app.css missing or empty in the image"; exit 1; }
           echo "app.css: $(wc -c < public/css/app.css) bytes"
-          for d in multer sharp node-cron file-type express cookie cookie-parser jsonwebtoken zod bcrypt mysql2 socket.io; do
-            test -d "node_modules/$d" || { echo "$d is not installed in the runtime image"; exit 1; }
-          done
-          # Read a version straight off disk - the point is proving the manifest is
-          # there, not re-solving it through an exports map.
-          echo "express $(sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p" node_modules/express/package.json | head -1)"
-          if test -d node_modules/eslint; then echo "devDependencies leaked into the runtime image"; exit 1; fi
+          node -e '
+            const fs = require("fs");
+            const deps = JSON.parse(fs.readFileSync("package.json", "utf8")).dependencies;
+            const names = Object.keys(deps);
+            const missing = names.filter((d) => !fs.existsSync("node_modules/" + d + "/package.json"));
+            for (const d of names) {
+              const v = JSON.parse(fs.readFileSync("node_modules/" + d + "/package.json", "utf8")).version;
+              console.log("  " + d + " " + v);
+            }
+            if (missing.length) {
+              console.error("not installed in the runtime image: " + missing.join(", "));
+              process.exit(1);
+            }
+            console.log(names.length + " direct dependencies resolved");
+            const dev = ["eslint", "tailwindcss", "nodemon", "concurrently", "socket.io-client"].filter((d) => fs.existsSync("node_modules/" + d));
+            if (dev.length) {
+              console.error("devDependencies leaked into the runtime image: " + dev.join(", "));
+              process.exit(1);
+            }
+            console.log("no devDependencies in the runtime image");
+          '
           echo "node_modules entries: $(ls node_modules | wc -l)"
           echo "image contents OK"
           EOF
-          docker run --rm -i --entrypoint sh ember:ci - < image-check.sh
+          docker run --rm -i --entrypoint sh ember:ci - < image-check.sh 2>&1 | tee image-check.log
+          # tee swallows the container's exit code, so take it back from the pipe.
+          exit "${PIPESTATUS[0]}"
 
       - name: Booting with a broken config must refuse loudly
         # The container exits non-zero HERE on purpose - that is the pass case.
@@ -320,3 +370,26 @@ jobs:
         run: |
           grep -q "/api/health" Dockerfile || { echo "HEALTHCHECK no longer points at /api/health"; exit 1; }
           grep -rn "api/health" server/server.js | head -3
+
+      # The runner's own log lives on a host some environments cannot reach (this
+      # repo's sandbox could not), and a UI click is not always available. Mirror the
+      # tail of whatever the failing step captured onto the PR, where it is readable
+      # from a phone. Only the log tails already visible in the Actions UI.
+      - name: Report the failure on the pull request
+        if: failure() && github.event_name == 'pull_request'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          {
+            printf '### `%s` failed on %s\n\n```\n' "${{ github.job }}" "${GITHUB_SHA:0:7}"
+            for f in image-check.log server.log prod.log seed-prod.log check.log migrate-refuse.log migrate-fresh.log; do
+              if [ -f "$f" ]; then
+                printf -- '----- %s -----\n' "$f"
+                tail -n 50 "$f"
+              fi
+            done
+            printf '```\n'
+          } > "$RUNNER_TEMP/report.md"
+          gh api -X POST "repos/$GITHUB_REPOSITORY/issues/${{ github.event.pull_request.number }}/comments" \
+            -F body="@$RUNNER_TEMP/report.md" || echo "could not post the report"
+

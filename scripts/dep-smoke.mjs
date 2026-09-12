@@ -605,7 +605,9 @@ const ciStep = (ci0) => (ci0?.jobs?.docker?.steps || []);
   const inline = body.split("<<'EOF'")[1]?.split('\nEOF\n')[1] || '';
   check(!/'/.test(inline.split('docker run')[0] || ''), 'no stray single quotes between the heredoc and the docker call');
   check(/test -s public\/css\/app\.css/.test(body), 'the image check still asserts the stylesheet was built into the image');
-  check(!/require\(/.test(body), 'the image check does not resolve deps through exports maps');
+  check(!/for d in /.test(body), 'no hand-maintained dependency list in the image check (it drifted to bcrypt, which does not exist)');
+  check(/readFileSync\("package\.json"/.test(body), 'the image check derives the dependency list from package.json');
+  check(/PIPESTATUS/.test(body), 'the image check does not let tee swallow the container exit code');
 }
 
 const ci = workflows.find((w) => w.f === 'ci.yml')?.doc;
