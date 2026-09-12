@@ -9,6 +9,21 @@ Built with plain HTML, Tailwind CSS (CLI build), and vanilla JavaScript ES
 modules on the front end; Node.js, Express, Socket.IO and MySQL 8 on the back
 end. No SPA framework, no ORM, no CDN script tags.
 
+**Putting it on a public host:** [`DEPLOY.md`](DEPLOY.md) is the operator guide -
+which provider and why, every environment variable, TLS to a managed MySQL, and how
+to prove the running site is healthy (`npm run deploy:check`, then
+`npm run sweep -- --base https://your-url --auth --demo`).
+
+Provision a MySQL 8-compatible database first (TiDB Cloud Serverless or Aiven both
+have free tiers and speak the protocol this app uses), then this button reads
+[`render.yaml`](render.yaml) from the repo - Docker runtime, HTTPS, health checks,
+auto-deploy on push:
+
+[![Deploy to Render](https://img.shields.io/static/v1?label=Deploy&message=to%20Render&color=4645ED)](https://dashboard.render.com/blueprint/new?repo=https://github.com/Miracle956888/Ember-date)
+
+On a VPS instead, one command does the whole thing: `sudo SITE_ADDRESS=your.domain
+./deploy/vps.sh` (add `--dry-run` to watch it first).
+
 ---
 
 ## Table of contents
