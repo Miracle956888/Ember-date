@@ -117,8 +117,13 @@ also clears tables, so on a host with real users it deletes them. If you want th
    Persistent Disk (dashboard → Service → Disks, $0.25/GB/mo) mounted at
    `/var/tmp/ember-uploads`, because `UPLOAD_DIR` points there in the blueprint.
    Without the disk, every deploy erases uploaded media.
-5. `preDeployCommand: node db/migrate.js` needs a paid instance type; on free it is
-   ignored, so run migrations from the service's shell yourself.
+5. The schema is applied by the image itself at first boot (`node db/migrate.js
+   --if-needed`). There is deliberately no `preDeployCommand`: it needs a paid
+   instance type, and `node db/migrate.js` on a database that already has tables
+   would drop 23 of them and abort on the rest - i.e. every push would destroy
+   user data. If you prefer to migrate by hand instead (e.g. to watch it happen),
+   run `node db/migrate.js` from the service's Shell tab once, before the first
+   traffic lands.
 
 ---
 
@@ -131,8 +136,12 @@ fly secrets set DB_HOST=... DB_PORT=3306 DB_USER=ember DB_PASSWORD=... DB_NAME=e
   DB_SSL=true APP_ORIGIN=https://ember.fly.dev \
   JWT_ACCESS_SECRET=$(openssl rand -hex 32) JWT_REFRESH_SECRET=$(openssl rand -hex 32)
 fly deploy
-fly ssh console -C "node db/migrate.js"
 ```
+
+`fly deploy` builds the image, whose start command runs `node db/migrate.js
+--if-needed`: an empty database gets the schema during the first health check, a
+database that already has one is left alone. Nothing to run by hand - and do not
+run the bare command afterwards, which now refuses for exactly that reason.
 
 The `node` user in the image needs to write to the volume; if uploads start failing
 with `EACCES`: `fly ssh console -C "chown -R node:node /app/uploads"`.
@@ -152,7 +161,12 @@ docker run -d --name ember --env-file /opt/ember/.env \
 
 ghcr.io packages from private repos are private: `docker login ghcr.io` with a token
 scoped `read:packages` (or set the package visibility to public). The image does not
-migrate - run `node db/migrate.js` in it once, or use compose, which does.
+migrate - `node db/migrate.js --if-needed` runs at container start in both the
+image and compose, which is what you want on a host you will restart. Run
+`node db/migrate.js` by hand only against an empty database: the schema snapshot
+is not re-runnable (it recreates 23 tables and aborts on the other 19), and
+`node db/migrate.js --fresh` is the one command that intentionally rebuilds from
+scratch, taking every row with it.
 
 Pushing a `v*` tag also rolls a VPS automatically once you set `DEPLOY_HOST`,
 `DEPLOY_PATH` and `SSH_PRIVATE_KEY` in repo settings; it runs `deploy/roll.sh`, which

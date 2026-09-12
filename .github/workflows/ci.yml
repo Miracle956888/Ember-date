@@ -123,10 +123,43 @@ jobs:
         # generated-column problems surface on the runner instead of on a host.
         run: node db/migrate.js
 
-      - name: Migrations are idempotent
-        # The container start command re-runs migrate on every deploy; if it were
-        # not re-runnable, every restart after the first would fail the deploy.
-        run: node db/migrate.js
+      - name: A container restart must not destroy data
+        # The image and compose both run `node db/migrate.js --if-needed` on every
+        # start, and db/schema.sql is a destructive snapshot (23 of 42 tables are
+        # dropped and recreated, the rest abort the run). So the no-op path is what
+        # keeps a public deployment's data alive across restarts, redeploys and
+        # OOMs. Prove the row survives, and prove the unguarded call refuses.
+
+      - name: Prove the guard on the real database
+        run: |
+          set -uo pipefail
+          mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci \
+            -e "INSERT INTO interests (slug, label) VALUES ('survive-restart','Survive Restart')"
+          echo "== --if-needed on a populated schema must skip, not re-apply =="
+          node db/migrate.js --if-needed | tee migrate-skip.log
+          grep -q "already present in" migrate-skip.log || { echo "expected a skip line"; exit 1; }
+          node db/migrate.js --if-needed >/dev/null 2>&1 || { echo "boot-time migrate must exit 0 on a restarted container"; exit 1; }
+          rows=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
+                 -e "SELECT COUNT(*) FROM interests WHERE slug='survive-restart'")
+          [ "$rows" = "1" ] || { echo "row lost across a restart (count=$rows) - boot wiped the database"; exit 1; }
+          echo "row survived two more boots"
+          echo "== the bare command must refuse rather than half-apply =="
+          if node db/migrate.js >migrate-refuse.log 2>&1; then
+            echo "plain migrate succeeded on a populated schema - the guard is gone"; exit 1
+          fi
+          grep -q "not re-runnable" migrate-refuse.log || { echo "refused for the wrong reason:"; cat migrate-refuse.log; exit 1; }
+          echo "refused as designed"
+          echo "== --fresh is the explicit, loud rebuild =="
+          node db/migrate.js --fresh >migrate-fresh.log 2>&1 || { echo "--fresh failed:"; tail -20 migrate-fresh.log; exit 1; }
+          gone=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
+                 -e "SELECT COUNT(*) FROM interests WHERE slug='survive-restart'")
+          [ "$gone" = "0" ] || { echo "--fresh left stale rows behind"; exit 1; }
+          tables=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
+                   -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='ember_ci'")
+          [ "$tables" = "42" ] || { echo "--fresh rebuilt $tables tables, expected 42"; exit 1; }
+          echo "42 tables after --fresh"
+          # Put the schema back the way the next step expects it (fresh + empty).
+          node db/migrate.js --if-needed | grep -q "applied 4" || true
 
       - name: Boot with seeded data and verify every route, asset and guard
         # One step: GitHub tears the process tree down between steps, so the server

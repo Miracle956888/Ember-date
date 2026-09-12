@@ -105,7 +105,7 @@ services:
     # README.md, so a public host that seeds itself is a host anyone can log
     # into. Load demo data on purpose with:  docker compose exec app node db/seed.js
     command: >
-      sh -c "node db/migrate.js && node server/server.js"
+      sh -c "node db/migrate.js --if-needed && exec node server/server.js"
 
 volumes:
   db-data:

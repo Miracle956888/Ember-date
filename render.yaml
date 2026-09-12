@@ -27,11 +27,12 @@ services:
     region: frankfurt
     healthCheckPath: /api/health
     autoDeploy: true
-    # Run migrations before the new container takes traffic: a schema problem
-    # then fails the deploy instead of serving a half-migrated app. If your
-    # Render account rejects this key, remove it and run `node db/migrate.js`
-    # from the shell in the service view.
-    preDeployCommand: node db/migrate.js
+    # No preDeployCommand on purpose. Two reasons: it needs a paid instance type,
+    # and `node db/migrate.js` is destructive - schema.sql DROPs and recreates all
+    # 42 tables, so running it before every deploy would wipe the database on
+    # every push. The image's own start command runs `node db/migrate.js
+    # --if-needed`, which provisions an empty database on first boot and no-ops
+    # after that, so the schema is applied exactly once.
     envVars:
       - key: NODE_ENV
         value: production

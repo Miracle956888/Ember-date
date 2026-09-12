@@ -49,4 +49,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:3000/api/health || exit 1
 
-CMD ["node", "server/server.js"]
+# Migrate before serving, but only when the schema is missing: db/schema.sql
+# recreates every table, so an unguarded run here would wipe the database on
+# every restart. --if-needed makes the first boot self-provisioning and every
+# later one a no-op, which is what a host that only knows `docker run` needs.
+CMD ["sh", "-c", "node db/migrate.js --if-needed && exec node server/server.js"]

@@ -149,11 +149,11 @@ Deployment variables and a host comparison live in
 | `npm run dev:server`  | `nodemon` only                                                   |
 | `npm run build:css`   | One-off minified stylesheet build (run before `npm start`)       |
 | `npm start`           | Start the server                                                 |
-| `npm run db:migrate`  | Apply `db/schema.sql` (add `--fresh` to drop and recreate)       |
+| `npm run db:migrate`  | Apply `db/schema.sql` to an **empty** database - it refuses if tables already exist, because the snapshot recreates 23 tables and aborts on the other 19. `npm run db:migrate -- --if-needed` is the boot-safe form (no-op when present); `--fresh` drops the database and rebuilds it, taking every row |
 | `npm run db:seed`     | Insert demo users, matches and conversations. **Refuses under `NODE_ENV=production`** unless you opt in - see [Demo logins](#demo-logins) |
 | `npm run db:reset`    | `db:migrate --fresh` followed by `db:seed`                       |
 | `npm run lint`        | ESLint over `server/`, `public/js/` and `db/`                    |
-| `npm test`            | `scripts/dep-smoke.mjs`: 100 checks over the real upload, media, cookie, cron, query-parsing and deploy-guard code paths. Needs no database |
+| `npm test`            | `scripts/dep-smoke.mjs`: 115 checks over the real upload, media, cookie, cron, query-parsing, deploy-guard and migration-guard code paths. Needs no database |
 | `npm run deploy:check`| Pre-flight for running somewhere public: origin, TLS, secrets, uploads dir, proxy flags, demo-data policy |
 | `npm run sweep -- --base https://your-host --auth --demo` | Walk a **running** deployment: all 15 pages, every asset they reference, the auth wall, CSRF, the 404 contract, and the theme paint |
 
@@ -1074,7 +1074,7 @@ full pathname, so `/chat?c=1` does not light up the `/chats` tab.
 
 > **Those thirty-three suites are not in this repository.** They live in `tmp/`,
 > which is gitignored, so a fresh clone cannot run them. What IS checked in and
-> runnable by anyone: `npm test` (`scripts/dep-smoke.mjs`, 100 checks, no database
+> runnable by anyone: `npm test` (`scripts/dep-smoke.mjs`, 115 checks, no database
 > needed) and `npm run deploy:check`. `scripts/smoke-socket.js` and
 > `scripts/smoke-browser.js` also live here, but both need a server already running
 > with a migrated, seeded database. CI runs the two that need no database, on

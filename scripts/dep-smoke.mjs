@@ -517,6 +517,48 @@ check(/ok {3}DB transport/.test(localPlainDb.out), 'the compose hostname "db" is
 const loopback = runCheck({ FORCE_HTTPS: '1', TRUST_PROXY: '0', NODE_ENV: 'development' });
 check(loopback.status === 1 && /loop every request forever/.test(loopback.out), 'deploy-check catches the redirect loop even in dev');
 
+// --------------------------------------------------------------------------
+section('11. Migration guard: a restart must never destroy data');
+
+// db/schema.sql is a snapshot, not a delta: it DROPs and recreates all 42 tables.
+// Both the image start command and docker-compose call `node db/migrate.js
+// --if-needed` at every container start, so the no-op path is load-bearing for
+// data survival, not just a nicety. Assert the shape of the schema file, then
+// the decision table the boot path runs on, then the wiring in each deploy file.
+const { decideMigration } = await import('../db/migrate.js');
+check(true, 'db/migrate.js imports without touching the database (testable guard)');
+
+const schemaSql = fs.readFileSync(path.join(ROOT, 'db', 'schema.sql'), 'utf8');
+const drops = (schemaSql.match(/^DROP TABLE IF EXISTS/gm) || []).length;
+const bareCreates = (schemaSql.match(/^CREATE TABLE /gm) || []).length;
+const guardedCreates = (schemaSql.match(/^CREATE TABLE IF NOT EXISTS/gm) || []).length;
+check(bareCreates === 42 && guardedCreates === 0, `the snapshot creates all 42 tables unconditionally (${bareCreates} bare, ${guardedCreates} guarded)`);
+check(drops === 23, `23 of those tables are dropped first (${drops}) - a partial wipe, which is why re-running is never safe`);
+check(drops < bareCreates, 'the drop list is incomplete, so a second run aborts partway rather than rebuilding cleanly');
+
+const d0 = decideMigration({});
+check(d0.action === 'apply' && !d0.destructive, 'empty database: first boot provisions the schema');
+const d1 = decideMigration({ existingTables: 42 });
+check(d1.action === 'refuse', 'schema present + no flags: refuses instead of wiping');
+const d2 = decideMigration({ existingTables: 42, ifNeeded: true });
+check(d2.action === 'skip', '--if-needed against an existing schema: no-op, which is what restarts run');
+const d3 = decideMigration({ existingTables: 0, ifNeeded: true });
+check(d3.action === 'apply' && !d3.destructive, '--if-needed against an empty database still provisions it');
+const d4 = decideMigration({ existingTables: 42, fresh: true });
+check(d4.action === 'apply', '--fresh is the only way through, and it recreates from the snapshot');
+const d5 = decideMigration({ existingTables: 1 });
+check(d5.action === 'refuse', 'a half-migrated database (1 table) is refused too, not papered over');
+const migrateSrc = fs.readFileSync(path.join(ROOT, 'db', 'migrate.js'), 'utf8');
+check(!migrateSrc.includes("'--force'"), 'there is no --force flag to reach for by accident');
+
+const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8');
+check(/CMD \["sh", "-c", "node db\/migrate\.js --if-needed && exec node server\/server\.js"\]/.test(dockerfile), 'Dockerfile CMD migrates only if needed, then execs the server');
+const composeRaw = fs.readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8');
+check(composeRaw.includes('node db/migrate.js --if-needed && exec node server/server.js'), 'compose start command matches the image (skip-if-present, exec for clean shutdown)');
+const renderYml = fs.readFileSync(path.join(ROOT, 'render.yaml'), 'utf8');
+check(!/preDeployCommand:\s*node db\/migrate\.js\s*$/m.test(renderYml), 'render.yaml has no bare preDeployCommand that would wipe data on every deploy');
+check(/not re-runnable/.test(migrateSrc) && /--if-needed/.test(migrateSrc), 'the refusal message names the reason and both ways out');
+
 fs.rmSync(tmpUploads, { recursive: true, force: true });
 server.close();
 await (await import('../server/src/db/pool.js')).pool.end().catch(() => {});

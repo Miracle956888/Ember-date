@@ -2,8 +2,22 @@
 /**
  * Applies db/schema.sql.
  *
- *   node db/migrate.js            # create database if needed + apply schema
- *   node db/migrate.js --fresh    # DROP DATABASE first, then apply
+ *   node db/migrate.js              # apply to an empty database; REFUSE if one exists
+ *   node db/migrate.js --if-needed  # no-op when a schema exists (what the image runs at boot)
+ *   node db/migrate.js --fresh      # DROP DATABASE first, then apply (needs that privilege)
+ *
+ * Read this before wiring it into anything: db/schema.sql is a snapshot, not an
+ * additive migration. It DROPs and recreates 23 of the 42 tables - users,
+ * messages, chats, photos, the ones holding everything - and the remaining 19
+ * (posts, moments, notifications, ...) are created unconditionally, so a second
+ * run does not "just skip them": it aborts partway with ER_TABLE_EXISTS_ERROR and
+ * leaves the foreign keys pointing at the freshly emptied tables. Re-running this
+ * file against a live database is therefore never safe, which is why the default
+ * mode refuses and why container boot uses --if-needed: first boot provisions the
+ * schema, every restart after it is a no-op.
+ *
+ * There is no versioned-migration system yet. To change an existing production
+ * schema, apply ALTER statements by hand (mysql client, or the provider's shell).
  *
  * The canonical schema targets MySQL 8 (utf8mb4_0900_ai_ci). When the server it
  * connects to is MariaDB (common for local dev / this sandbox), the statements
@@ -12,10 +26,12 @@
  */
 import fs from 'node:fs/promises';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import mysql from 'mysql2/promise';
 import { env, ROOT_DIR } from '../server/src/config/env.js';
 
 const FRESH = process.argv.includes('--fresh');
+const IF_NEEDED = process.argv.includes('--if-needed');
 const SCHEMA_PATH = path.join(ROOT_DIR, 'db', 'schema.sql');
 
 /** Split a SQL file into statements, ignoring `--` comments and respecting quotes. */
@@ -84,6 +100,22 @@ export function adaptForMariaDb(statement) {
     .replace(/COLLATE\s*=\s*utf8mb4_0900_as_cs/gi, 'COLLATE=utf8mb4_general_ci');
 }
 
+/**
+ * Decide what to do about a schema that may already exist. Pure and exported so
+ * scripts/dep-smoke.mjs can prove the boot contract without a database: the image
+ * start command calls migrate on EVERY start, and the schema it applies destroys
+ * data, so "apply" twice must never be reachable.
+ */
+export function decideMigration({ existingTables = 0, fresh = false, ifNeeded = false } = {}) {
+  if (existingTables === 0) return { action: 'apply', existingTables, destructive: false };
+  // --fresh dropped the whole database a moment ago, so there is nothing left for
+  // the guard to protect. Deliberately the only way to get here on a populated DB:
+  // a flag that says "recreate anyway" would be one typo away from data loss.
+  if (fresh) return { action: 'apply', existingTables, destructive: false };
+  if (ifNeeded) return { action: 'skip', existingTables };
+  return { action: 'refuse', existingTables };
+}
+
 async function main() {
   const serverConn = await mysql.createConnection({
     host: env.DB.host,
@@ -115,6 +147,38 @@ async function main() {
   );
   await serverConn.query(`USE \`${dbName}\``);
 
+  const [existing] = await serverConn.query(
+    `SELECT COUNT(*) AS n FROM information_schema.TABLES
+      WHERE TABLE_SCHEMA = ? AND TABLE_TYPE = 'BASE TABLE'`,
+    [dbName]
+  );
+  const decision = decideMigration({
+    existingTables: Number(existing[0].n),
+    fresh: FRESH,
+    ifNeeded: IF_NEEDED
+  });
+
+  if (decision.action === 'skip') {
+    console.log(
+      `[migrate] ${decision.existingTables} table(s) already present in \`${dbName}\` - leaving them alone (--if-needed)`
+    );
+    await serverConn.end();
+    return;
+  }
+  if (decision.action === 'refuse') {
+    await serverConn.end();
+    throw new Error(
+      `[migrate] \`${dbName}\` already has ${decision.existingTables} table(s) and db/schema.sql is not re-runnable: ` +
+      'it DROPs and recreates 23 tables (deleting that data) then aborts on the other 19. ' +
+      'Use --if-needed to no-op when a schema exists (what container boot does), or --fresh ' +
+      'to drop the database and rebuild it from the snapshot. To evolve a live schema, apply ' +
+      'ALTER statements by hand - there is no versioned migration system yet.'
+    );
+  }
+  if (FRESH) {
+    console.warn(`[migrate] rebuilding \`${dbName}\` from the schema snapshot (--fresh); every table is recreated empty`);
+  }
+
   const raw = await fs.readFile(SCHEMA_PATH, 'utf8');
   const statements = splitStatements(raw);
 
@@ -141,7 +205,12 @@ async function main() {
   await serverConn.end();
 }
 
-main().catch((err) => {
-  console.error('[migrate] error:', err.message);
-  process.exitCode = 1;
-});
+// Run only when invoked as a script. scripts/dep-smoke.mjs imports decideMigration
+// from this file to test the boot contract, and importing must not open a
+// connection to a database that may hold live data.
+if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
+  main().catch((err) => {
+    console.error('[migrate] error:', err.message);
+    process.exitCode = 1;
+  });
+}

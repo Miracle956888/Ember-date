@@ -199,7 +199,7 @@ cat <<EOF
 
     Next, in this order:
       1. npm run deploy:check        # from $APP_DIR - catches the rest, offline style
-      2. cd $APP_DIR && ${C} exec app node db/migrate.js   # idempotent, also runs at boot
+      2. cd $APP_DIR && ${C} exec app node db/migrate.js --if-needed   # boot already runs this
       3. ONLY IF YOU WANT DEMO DATA:
          cd $APP_DIR && ${C} exec -e SEED_DEMO=1 -e DEMO_PASSWORD=change-me app node db/seed.js
          (it deletes existing users - never run it once real people have signed up)
