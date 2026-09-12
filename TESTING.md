@@ -87,7 +87,7 @@ npm test                  # scripts/dep-smoke.mjs
 npm run deploy:check -- --offline   # scripts/deploy-check.mjs
 ```
 
-**`npm test`** - 115 checks that import the app's own modules and drive them:
+**`npm test`** - 141 checks that import the app's own modules and drive them:
 the last section is the migration guard: `db/schema.sql` is a snapshot that drops
 23 of 42 tables and aborts on the rest, so the `--if-needed` no-op the container
 start command relies on is asserted here as a decision table, and functionally

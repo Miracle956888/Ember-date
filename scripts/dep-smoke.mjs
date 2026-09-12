@@ -559,6 +559,62 @@ const renderYml = fs.readFileSync(path.join(ROOT, 'render.yaml'), 'utf8');
 check(!/preDeployCommand:\s*node db\/migrate\.js\s*$/m.test(renderYml), 'render.yaml has no bare preDeployCommand that would wipe data on every deploy');
 check(/not re-runnable/.test(migrateSrc) && /--if-needed/.test(migrateSrc), 'the refusal message names the reason and both ways out');
 
+// --------------------------------------------------------------------------
+section('12. CI workflow files are valid for the Actions schema, not just YAML');
+
+// A step with a name and a comment but no run:/uses: is legal YAML and the Actions
+// parser rejects the whole file for it - which shows up as a workflow run that
+// completes in the same second it started, with zero jobs, no log, and no clue
+// beyond "the workflow is not valid". That happened to this repo's ci.yml, so the
+// rule is asserted here instead of discovered at deploy time.
+const yaml = nodeRequire('js-yaml');
+const workflows = ['ci.yml', 'publish.yml'].map((f) => {
+  const text = fs.readFileSync(path.join(ROOT, '.github', 'workflows', f), 'utf8');
+  let doc = null;
+  try {
+    doc = yaml.load(text);
+  } catch (err) {
+    check(false, `${f} parses as YAML`, String(err.message).split('\n')[0]);
+  }
+  return { f, doc };
+});
+check(workflows.every((w) => w.doc), 'both workflow files parse');
+
+for (const { f, doc } of workflows) {
+  if (!doc) continue;
+  const jobs = doc.jobs || {};
+  check(Object.keys(jobs).length > 0, `${f}: declares ${Object.keys(jobs).length} job(s)`);
+  for (const [id, job] of Object.entries(jobs)) {
+    check(Boolean(job['runs-on']), `${f}/${id}: has runs-on`);
+    check(Array.isArray(job.steps) && job.steps.length > 0, `${f}/${id}: has steps`);
+    const orphans = (job.steps || []).filter((st) => !st.run && !st.uses);
+    check(
+      orphans.length === 0,
+      `${f}/${id}: every step has run: or uses:`,
+      orphans.map((st) => st.name || Object.keys(st).join('+')).join(', ')
+    );
+  }
+}
+
+const ci = workflows.find((w) => w.f === 'ci.yml')?.doc;
+if (ci) {
+  const on = ci.on ?? ci[true]; // js-yaml keeps `on` a string key; older loaders made it boolean true
+  // `pull_request:` with no value means "every activity type", which parses to
+  // null - so presence is the test, not truthiness.
+  check(on?.push !== undefined && on?.pull_request !== undefined, 'ci.yml runs on both push and pull_request');
+  check(on?.push?.branches?.includes('main') !== false, 'ci.yml still covers the production branch');
+  const verify = ci.jobs['deploy-verify'];
+  check(Boolean(verify), 'ci.yml keeps the deploy-verify job (the only check that boots a real server)');
+  check(Boolean(verify?.services?.mysql?.image?.startsWith('mysql:8.0')), 'deploy-verify runs against MySQL 8, not MariaDB');
+  const boot = (verify?.steps || []).find((st) => String(st.name).startsWith('Boot with seeded data'));
+  check(/route-sweep\.mjs/.test(String(boot?.run)), 'deploy-verify runs the route sweep against the live server');
+  check(/smoke-socket\.js/.test(String(boot?.run)), 'deploy-verify runs the Socket.IO suite against the live server');
+  const guard = (verify?.steps || []).find((st) => String(st.name).includes('restart must not destroy data'));
+  check(/--if-needed/.test(String(guard?.run)) && /survive-restart/.test(String(guard?.run)), 'the boot-time migration is proven non-destructive on real data');
+  const prod = (verify?.steps || []).find((st) => String(st.name).includes('production mode'));
+  check(/FORCE_HTTPS=1/.test(String(prod?.run)) && /301/.test(String(prod?.run)) && /Secure/.test(String(prod?.run)), 'deploy-verify boots in production and checks HTTPS upgrade + Secure cookies');
+}
+
 fs.rmSync(tmpUploads, { recursive: true, force: true });
 server.close();
 await (await import('../server/src/db/pool.js')).pool.end().catch(() => {});

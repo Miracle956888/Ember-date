@@ -135,7 +135,6 @@ jobs:
         # keeps a public deployment's data alive across restarts, redeploys and
         # OOMs. Prove the row survives, and prove the unguarded call refuses.
 
-      - name: Prove the guard on the real database
         run: |
           set -uo pipefail
           mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci \
