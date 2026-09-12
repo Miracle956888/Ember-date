@@ -106,17 +106,26 @@ also clears tables, so on a host with real users it deletes them. If you want th
    Note the host / port / user / password / database, and **download its CA bundle** -
    both providers require TLS, and `mysql2` without `DB_SSL=true` fails with
    `Connections using insecure transport are prohibited`, which mentions TLS nowhere.
-2. Fork this repo, then Render → New → Blueprint → pick the fork. `render.yaml`
-   creates the web service from the Dockerfile, generates the two JWT secrets for
-   you, and prompts for the `sync: false` ones.
+2. Render → New → Blueprint → pick this repo (the Deploy button in the README goes
+   straight there; no fork needed on a repo you own). `render.yaml` creates the web
+   service from the Dockerfile on **`branch: main`**, sets `autoDeploy: true` and
+   `healthCheckPath: /api/health`, generates the two JWT secrets for you
+   (`generateValue: true` - a base64 256-bit value, never stored in the repo), and
+   prompts for every `sync: false` one: `DB_HOST`, `DB_PORT`, `DB_USER`,
+   `DB_PASSWORD`, `DB_NAME`, `TURN_*`. Those prompts are the only place the credentials should
+   ever be typed - keep them out of the file, and out of any log.
 3. Put the CA bundle in the repo? No. Either use a provider whose certificate chains
    to a public CA (then `DB_SSL=true` is enough), or add a Render **Secret File** env
    var named `DB_SSL_CA` containing the PEM and set `DB_SSL=true` - Render writes file
    env vars to the path in the variable, which is exactly what `DB_SSL_CA` expects.
-4. Set `APP_ORIGIN` to the real URL once your custom domain is attached, then add a
-   Persistent Disk (dashboard → Service → Disks, $0.25/GB/mo) mounted at
-   `/var/tmp/ember-uploads`, because `UPLOAD_DIR` points there in the blueprint.
-   Without the disk, every deploy erases uploaded media.
+4. The upload volume is declared in the blueprint (`disk: /app/uploads`,
+   `UPLOAD_DIR` matched to it), so media survives redeploys without a dashboard
+   trip. If a deploy comes up healthy but uploads start failing with `EACCES`, the
+   fresh mount came up root-owned: service → Shell → `chown node:node /app/uploads`.
+   Set `APP_ORIGIN` to the real URL as soon as your domain is attached - cookies,
+   CORS and the Socket.IO origin check all key off it, and a wrong value there shows
+   up as "logged in, then every request 401s" or a websocket that connects and
+   instantly closes.
 5. The schema is applied by the image itself at first boot (`node db/migrate.js
    --if-needed`). There is deliberately no `preDeployCommand`: it needs a paid
    instance type, and `node db/migrate.js` on a database that already has tables

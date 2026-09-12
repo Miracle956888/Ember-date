@@ -12,21 +12,43 @@
 #    that means every socket drops AND the expiry cron stops, so "24-hour"
 #    messages sit in the database until the next cold boot. `starter` is the
 #    cheapest plan that can actually honour the product promise.
-# 3. Uploaded media lives on disk. Render's filesystem is ephemeral unless you
-#    attach a Persistent Disk in the service settings (dashboard-only), so
-#    without one every deploy deletes what people uploaded. See DEPLOY.md.
+# 3. Uploaded media lives on disk, declared below as a `disk:` block (the only
+#    way Render will create it for you - Render cannot manage MySQL, but it can
+#    manage a volume). The disk and UPLOAD_DIR must name the same path.
 
 services:
   - type: web
     name: ember
     runtime: docker
     dockerfilePath: ./Dockerfile
+    # Explicit, because the blueprint default is not this repo's production
+    # branch: Render documents `branch` as defaulting to master, and a service
+    # pointed at a branch that does not exist deploys nothing at all.
+    branch: main
     plan: starter
     # Frankfurt is the closest Render region to Nigeria; pick whatever is nearest
     # your users.
     region: frankfurt
+    # Render polls this over plain HTTP on the container port, so it only works
+    # because forceHttps() exempts /api/health - without that exemption every
+    # health check would get a 301 and Render would restart a perfectly healthy
+    # container forever.
     healthCheckPath: /api/health
+    # `autoDeploy: true` is the documented key and stays as-is. Newer blueprints
+    # spell the same thing `autoDeployTrigger: commit` (or `checksPass` to wait
+    # for CI); do not set both, and do not set `off` - the whole point is that a
+    # push to main rolls the site.
     autoDeploy: true
+    # Uploaded media MUST survive redeploys. Without this disk, Render's
+    # filesystem is ephemeral and every deploy deletes what people uploaded.
+    # mountPath has to match UPLOAD_DIR below; the image already creates and
+    # chowns /app/uploads for the `node` user. If uploads ever fail with EACCES
+    # on a freshly attached disk, the mount came up root-owned - fix it from the
+    # service's Shell tab: chown node:node /app/uploads
+    disk:
+      name: ember-uploads
+      mountPath: /app/uploads
+      sizeGB: 1
     # No preDeployCommand on purpose. Two reasons: it needs a paid instance type,
     # and `node db/migrate.js` is destructive - schema.sql DROPs and recreates all
     # 42 tables, so running it before every deploy would wipe the database on
@@ -41,13 +63,19 @@ services:
       - key: DB_HOST
         sync: false # external MySQL hostname
       - key: DB_PORT
-        value: "3306"
+        # Prompted, not hardcoded: Aiven and self-hosted MySQL listen on 3306,
+        # TiDB Cloud Serverless on 4000. Getting this wrong is a connection
+        # timeout that looks like a firewall problem.
+        sync: false
       - key: DB_USER
         sync: false
       - key: DB_PASSWORD
         sync: false
       - key: DB_NAME
-        value: ember
+        # Prompted rather than fixed: providers name the database for you (Aiven
+        # uses the service name, TiDB uses `defaultdb`), and a guessed value here
+        # is an `Unknown database` error at first boot, not at deploy time.
+        sync: false
       # TiDB Cloud Serverless and Aiven both require TLS; without these the
       # connection is refused with "insecure transport are prohibited".
       - key: DB_SSL
@@ -66,7 +94,9 @@ services:
       - key: MESSAGE_TTL_HOURS
         value: "24"
       - key: UPLOAD_DIR
-        value: /var/tmp/ember-uploads
+        # Must equal disk.mountPath above, or media is written to the ephemeral
+        # filesystem and vanishes on the next deploy.
+        value: /app/uploads
       # Leave these blank to ship without relay support; calls then only work on
       # the same network. Fill them after standing up coturn.
       - key: TURN_URL
