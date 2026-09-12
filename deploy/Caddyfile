@@ -1,0 +1,40 @@
+# Caddyfile - TLS termination + reverse proxy for a single-box deployment.
+#
+# Caddy reads the domain from the SITE_ADDRESS environment variable, gets a
+# certificate from Let's Encrypt automatically, redirects http -> https on its
+# own, and sets the X-Forwarded-* headers the app needs (hence TRUST_PROXY=1).
+#
+#   sudo SITE_ADDRESS=ember.example.com caddy run --config deploy/Caddyfile
+#
+# DNS must already resolve to this machine, or the certificate request fails and
+# Caddy logs "no such host". For a bare IP with no domain, use
+# SITE_ADDRESS=http://YOUR_IP to run without TLS (logins are then plaintext -
+# fine for a look round, never for real users).
+
+{$SITE_ADDRESS:localhost} {
+	encode zstd gzip
+
+	# 50 MB video uploads arrive here. Caddy imposes no body limit by default;
+	# stating it keeps an nginx-style surprise from appearing later.
+	request_body {
+		max_size 60MB
+	}
+
+	reverse_proxy 127.0.0.1:3000 {
+		# Socket.IO long-polling responses must not be buffered, or delivered
+		# messages arrive only when the buffer fills.
+		flush_interval -1
+
+		# Long calls should not be cut off mid-stream by a proxy timeout.
+		transport http {
+			read_timeout  300s
+			write_timeout 300s
+		}
+
+		# Caddy sets X-Forwarded-Proto/Host/For on the proxied request itself,
+		# which is what makes req.secure and real client IPs work in the app.
+		# No `header` block needed here - that directive edits *responses*.
+	}
+
+	# Access/error logs go to journald by default (journalctl -u caddy).
+}

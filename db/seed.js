@@ -18,8 +18,35 @@ import sharp from 'sharp';
 import { pool, query, execute } from '../server/src/db/pool.js';
 import { env, ROOT_DIR } from '../server/src/config/env.js';
 
-const PASSWORD = 'Password123!';
+/**
+ * Every demo account shares one password that is also printed in README.md, so
+ * seeding is safe on a laptop and dangerous on a host the internet can reach:
+ * anyone could sign in as `@amara` and read other people's live chats. Production
+ * therefore needs an explicit opt-in (`SEED_DEMO=1`) plus a password that is not
+ * the published default (`DEMO_PASSWORD`).
+ */
+const PASSWORD = process.env.DEMO_PASSWORD || 'Password123!';
 const SEED_IMG_DIR = path.join(ROOT_DIR, 'public', 'img', 'seed');
+
+function assertSeedingAllowed() {
+  if (!env.isProd) return;
+  if (process.env.SEED_DEMO !== '1') {
+    throw new Error(
+      '[seed] refusing to create demo accounts: NODE_ENV=production.\n' +
+        '       Demo logins all share the password published in README.md, so seeding\n' +
+        '       a public host hands every demo account to the first stranger who reads\n' +
+        '       this repo. Seeding also CLEARS existing rows (clearData), so on a live\n' +
+        '       server it would delete real user data. Seed only if you truly want demo\n' +
+        '       data here, by setting SEED_DEMO=1 and DEMO_PASSWORD to something unpublished.'
+    );
+  }
+  if (!process.env.DEMO_PASSWORD || process.env.DEMO_PASSWORD === 'Password123!') {
+    throw new Error(
+      '[seed] SEED_DEMO=1 is set but DEMO_PASSWORD is missing or is the README default.\n' +
+        '       On a public host, set DEMO_PASSWORD to a unique password before seeding.'
+    );
+  }
+}
 
 const PALETTES = [
   ['#7B35A8', '#B03A93'],
@@ -159,6 +186,7 @@ function dt(date) {
 }
 
 async function main() {
+  assertSeedingAllowed();
   console.log('[seed] starting');
   await ensureDirs();
   await clearData();
@@ -395,7 +423,12 @@ async function main() {
 
   const [{ total }] = await query('SELECT COUNT(*) AS total FROM users');
   console.log(`\n[seed] done. ${total} users.`);
-  console.log('[seed] demo logins (password: Password123!):');
+  if (env.isProd) {
+    // Never echo a production password into logs or CI output.
+    console.log('[seed] demo logins created with the DEMO_PASSWORD you set (not logged here):');
+  } else {
+    console.log(`[seed] demo logins (password: ${PASSWORD}):`);
+  }
   console.log('       amara@example.com   <- matched with tunde@example.com (has a live chat)');
   console.log('       tunde@example.com');
   console.log('       ngozi@example.com   <- matched with kelechi@example.com');

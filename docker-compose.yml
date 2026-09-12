@@ -1,3 +1,9 @@
+# Pinned so the image this builds is always <name>-<service> (ember-app), rather
+# than whatever directory the project happens to sit in. The publish workflow tags
+# a pulled image as ember-app:pinned to swap builds for pulls, and that relies on
+# this name.
+name: ember
+
 services:
   db:
     image: mysql:8.0
@@ -13,8 +19,12 @@ services:
       --character-set-server=utf8mb4
       --collation-server=utf8mb4_0900_ai_ci
       --default-authentication-plugin=caching_sha2_password
+    # Published on loopback by default: the app reaches it over the compose
+    # network, and you can still use a client on the host (mysql -P 3307), but a
+    # random scanner on the internet cannot get to the login prompt at all.
+    # Set DB_BIND_ADDR=0.0.0.0 only if you really want it reachable.
     ports:
-      - '${DB_PORT_HOST:-3307}:3306'
+      - '${DB_BIND_ADDR:-127.0.0.1}:${DB_PORT_HOST:-3307}:3306'
     volumes:
       - db-data:/var/lib/mysql
     healthcheck:
@@ -29,18 +39,31 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+    # Pinned so the image name never depends on compose's implicit
+    # <project>-<service> naming, and so deploy/roll.sh can point this service at
+    # a pulled image (docker tag <published> ember-app:latest) with no build step.
+    image: ember-app:latest
     container_name: ember-app
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
     environment:
-      NODE_ENV: production
+      # Production by default, because that is what this file is usually used for.
+      # Override for a local trial run (NODE_ENV=development docker compose up) when
+      # you want plain http://localhost logins and the seeder's dev defaults: in
+      # production the app marks cookies Secure (browsers allow that on localhost,
+      # not on a LAN IP) and db/seed.js refuses to create the published demo accounts.
+      NODE_ENV: ${NODE_ENV:-production}
       PORT: 3000
       APP_ORIGIN: ${APP_ORIGIN:-http://localhost:3000}
       DB_HOST: db
       DB_PORT: 3306
       DB_NAME: ${DB_NAME:-ephemeral_chat}
+      # Only needed when DB_HOST is a managed database outside this network.
+      DB_SSL: ${DB_SSL:-false}
+      DB_SSL_CA: ${DB_SSL_CA:-}
+      DB_SSL_REJECT_UNAUTHORIZED: ${DB_SSL_REJECT_UNAUTHORIZED:-true}
       DB_USER: ${DB_USER:-ecuser}
       DB_PASSWORD: ${DB_PASSWORD:-ecpass}
       # Generate real values before any real deployment:
@@ -54,14 +77,35 @@ services:
       TURN_URL: ${TURN_URL:-}
       TURN_USERNAME: ${TURN_USERNAME:-}
       TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+      # Set FORCE_HTTPS=1 once a proxy in front of this serves TLS, so plain
+      # http:// visits are upgraded instead of running an insecure session.
+      FORCE_HTTPS: ${FORCE_HTTPS:-0}
+      # Only used by `node db/seed.js`; never needed to run the app.
+      SEED_DEMO: ${SEED_DEMO:-}
+      DEMO_PASSWORD: ${DEMO_PASSWORD:-}
+    # Same reasoning as the db service: behind Caddy/nginx the app should not
+    # answer on a public port, because a direct http://host:3000 visit bypasses
+    # TLS and every redirect the app makes. Use APP_BIND_ADDR=0.0.0.0 when you
+    # deliberately want it exposed (or just to test from a phone on your LAN).
     ports:
-      - '${PORT:-3000}:3000'
+      - '${APP_BIND_ADDR:-127.0.0.1}:${PORT:-3000}:3000'
     volumes:
       # Uploaded media survives container rebuilds.
       - uploads:/app/uploads
-    # Apply the schema (idempotent), seed demo data, then serve.
+    # A public box gets traffic. Cap it so a runaway upload job cannot take the
+    # whole machine (including MySQL) down with it.
+    mem_limit: 1g
+    logging:
+      driver: json-file
+      options:
+        max-size: '10m'
+        max-file: '3'
+    # Apply the schema (idempotent), then serve. Demo data is deliberately NOT
+    # seeded on boot - every demo account shares the password printed in
+    # README.md, so a public host that seeds itself is a host anyone can log
+    # into. Load demo data on purpose with:  docker compose exec app node db/seed.js
     command: >
-      sh -c "node db/migrate.js && node db/seed.js && node server/server.js"
+      sh -c "node db/migrate.js --if-needed && exec node server/server.js"
 
 volumes:
   db-data:

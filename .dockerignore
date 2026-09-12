@@ -1,0 +1,25 @@
+# Keep the build context small and honest. node_modules and .git are by far the
+# biggest directories here, and neither belongs in an image that runs `npm ci`.
+node_modules
+npm-debug.log*
+.git
+.gitignore
+.github
+.env
+.env.*
+!.env.example
+
+# Built inside stage 1 of the Dockerfile from src/input.css.
+public/css
+
+# Runtime state that must come from a volume, never from a stale build context:
+# an image carrying the dev box's uploads would re-create them on every deploy.
+uploads
+
+# Test scratch space and docs.
+tmp
+coverage
+*.log
+AUDIT-V1.md
+TESTING.md
+V1-PROGRESS.md

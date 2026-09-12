@@ -1,0 +1,111 @@
+# Render blueprint - `render.yaml` is read by "New Blueprint" in the Render dashboard.
+#
+# Things to know before you use it (this sandbox has no network access to Render,
+# so this file is written against their documented blueprint keys but has not been
+# validated against a live Render account):
+#
+# 1. Render does NOT manage MySQL - the `databases:` block is PostgreSQL only.
+#    Create an external MySQL 8 / MariaDB 10.6+ first: TiDB Cloud Serverless
+#    (MySQL protocol, free tier) or Aiven free-tier MySQL both work, and both
+#    hand you a host/user/password triple to paste below.
+# 2. The `free` instance type sleeps after ~15 idle minutes. For a realtime app
+#    that means every socket drops AND the expiry cron stops, so "24-hour"
+#    messages sit in the database until the next cold boot. `starter` is the
+#    cheapest plan that can actually honour the product promise.
+# 3. Uploaded media lives on disk, declared below as a `disk:` block (the only
+#    way Render will create it for you - Render cannot manage MySQL, but it can
+#    manage a volume). The disk and UPLOAD_DIR must name the same path.
+
+services:
+  - type: web
+    name: ember
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    # Explicit, because the blueprint default is not this repo's production
+    # branch: Render documents `branch` as defaulting to master, and a service
+    # pointed at a branch that does not exist deploys nothing at all.
+    branch: main
+    plan: starter
+    # Frankfurt is the closest Render region to Nigeria; pick whatever is nearest
+    # your users.
+    region: frankfurt
+    # Render polls this over plain HTTP on the container port, so it only works
+    # because forceHttps() exempts /api/health - without that exemption every
+    # health check would get a 301 and Render would restart a perfectly healthy
+    # container forever.
+    healthCheckPath: /api/health
+    # `autoDeploy: true` is the documented key and stays as-is. Newer blueprints
+    # spell the same thing `autoDeployTrigger: commit` (or `checksPass` to wait
+    # for CI); do not set both, and do not set `off` - the whole point is that a
+    # push to main rolls the site.
+    autoDeploy: true
+    # Uploaded media MUST survive redeploys. Without this disk, Render's
+    # filesystem is ephemeral and every deploy deletes what people uploaded.
+    # mountPath has to match UPLOAD_DIR below; the image already creates and
+    # chowns /app/uploads for the `node` user. If uploads ever fail with EACCES
+    # on a freshly attached disk, the mount came up root-owned - fix it from the
+    # service's Shell tab: chown node:node /app/uploads
+    disk:
+      name: ember-uploads
+      mountPath: /app/uploads
+      sizeGB: 1
+    # No preDeployCommand on purpose. Two reasons: it needs a paid instance type,
+    # and `node db/migrate.js` is destructive - schema.sql DROPs and recreates all
+    # 42 tables, so running it before every deploy would wipe the database on
+    # every push. The image's own start command runs `node db/migrate.js
+    # --if-needed`, which provisions an empty database on first boot and no-ops
+    # after that, so the schema is applied exactly once.
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_ORIGIN
+        value: https://ember.onrender.com # change once your real domain is attached
+      - key: DB_HOST
+        sync: false # external MySQL hostname
+      - key: DB_PORT
+        # Prompted, not hardcoded: Aiven and self-hosted MySQL listen on 3306,
+        # TiDB Cloud Serverless on 4000. Getting this wrong is a connection
+        # timeout that looks like a firewall problem.
+        sync: false
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        # Prompted rather than fixed: providers name the database for you (Aiven
+        # uses the service name, TiDB uses `defaultdb`), and a guessed value here
+        # is an `Unknown database` error at first boot, not at deploy time.
+        sync: false
+      # TiDB Cloud Serverless and Aiven both require TLS; without these the
+      # connection is refused with "insecure transport are prohibited".
+      - key: DB_SSL
+        value: "true"
+      # If your provider hands you a CA bundle, mount it into the image and set
+      # DB_SSL_CA to its path. Leaving reject-on without a CA works only when the
+      # provider uses a globally trusted certificate chain.
+      - key: DB_SSL_REJECT_UNAUTHORIZED
+        value: "true"
+      # Render generates real random values for these on first deploy, which is
+      # better than any placeholder you would type at 2am.
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: MESSAGE_TTL_HOURS
+        value: "24"
+      - key: UPLOAD_DIR
+        # Must equal disk.mountPath above, or media is written to the ephemeral
+        # filesystem and vanishes on the next deploy.
+        value: /app/uploads
+      # Leave these blank to ship without relay support; calls then only work on
+      # the same network. Fill them after standing up coturn.
+      - key: TURN_URL
+        sync: false
+      - key: TURN_USERNAME
+        sync: false
+      - key: TURN_CREDENTIAL
+        sync: false
+      - key: FORCE_HTTPS
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"

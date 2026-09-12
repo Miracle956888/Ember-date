@@ -1,0 +1,80 @@
+# flyctl config - `fly launch --copy-config` picks this up.
+#
+# Same caveat as render.yaml: written from Fly's documented schema, not validated
+# against a live Fly account, because this sandbox cannot reach fly.io at all.
+#
+# Fly gives you a real public IP and machines that stay up, which matters here:
+# Socket.IO and the expiry cron both need a process that never sleeps. Like
+# Render, Fly has no managed MySQL, so point DB_HOST at external MySQL/MariaDB
+# (TiDB Cloud Serverless or Aiven both speak the protocol this app uses).
+
+app = 'ember'
+primary_region = 'cdg' # closest Fly regions to Nigeria are generally Paris/Lisbon/Madrid
+
+[build]
+  # Uses the repo Dockerfile: multi-stage, Tailwind built in stage 1, runs as `node`.
+
+[env]
+  NODE_ENV = 'production'
+  PORT = '3000'
+  UPLOAD_DIR = '/app/uploads'
+  MESSAGE_TTL_HOURS = '24'
+  # APP_ORIGIN must match the URL the browser actually uses, or CORS rejects
+  # every API call - set it with:
+  #   fly secrets set APP_ORIGIN=https://ember.yourdomain.com
+  FORCE_HTTPS = '1'
+  TRUST_PROXY = '1'
+
+# Secrets do not belong in this file. Load them, then deploy:
+#   fly secrets set DB_HOST=... DB_USER=... DB_PASSWORD=... DB_NAME=ember \
+#                   JWT_ACCESS_SECRET=... JWT_REFRESH_SECRET=... APP_ORIGIN=https://...
+# The image migrates itself on first boot (`--if-needed`), so there is nothing
+# else to run. To do it by hand instead: fly ssh console -C "node db/migrate.js"
+
+[mounts]
+  source = 'ember_uploads'
+  destination = '/app/uploads'
+  # Create it first: fly volume create ember_uploads --app ember -s 10 -y
+  # If uploads start failing with EACCES, the fresh volume is root-owned:
+  #   fly ssh console -C "chown -R node:node /app/uploads"
+
+[[services]]
+  internal_port = 3000
+  protocol = 'tcp'
+  # Realtime app: never auto-stop, or websockets die mid-conversation and
+  # expiring messages stop being deleted while the machine sleeps.
+  auto_stop_machines = false
+  auto_start_machines = true
+  min_machines_running = 1
+
+  # One machine only. Multiple instances need sticky sessions or a Redis adapter
+  # for Socket.IO, plus a shared object store for uploads - neither is wired up.
+  processes = ['app']
+
+  [services.concurrency]
+    type = 'connections'
+    hard_limit = 500
+    soft_limit = 400
+
+  [[services.ports]]
+    port = 80
+    handlers = ['http']
+
+  [[services.ports]]
+    port = 443
+    handlers = ['tls', 'http']
+
+  [[services.tcp_checks]]
+    interval = '15s'
+    timeout = '2s'
+    grace_period = '10s'
+
+  [[services.http_checks]]
+    path = '/api/health'
+    interval = '30s'
+    timeout = '5s'
+    grace_period = '25s'
+
+[[vm]]
+  size = 'shared-cpu-1x'
+  memory = '512mb'

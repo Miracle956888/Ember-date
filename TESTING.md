@@ -75,6 +75,57 @@ around **80 ms**, well inside the 300 ms budget.
 
 ---
 
+## 2b. Automated: dependency and config checks (no database needed)
+
+These two run on a fresh clone with nothing but `npm ci`, and they are what CI
+executes. They exist because everything in §1 and §2 needs a live, seeded MySQL,
+which a fresh clone does not have - so a new contributor (or a bot, or a CI runner)
+had no way to check anything at all.
+
+```bash
+npm test                  # scripts/dep-smoke.mjs
+npm run deploy:check -- --offline   # scripts/deploy-check.mjs
+```
+
+**`npm test`** - 145 checks that import the app's own modules and drive them:
+the last section is the migration guard: `db/schema.sql` is a snapshot that drops
+23 of 42 tables and aborts on the rest, so the `--if-needed` no-op the container
+start command relies on is asserted here as a decision table, and functionally
+against real MySQL 8 in CI (`deploy-verify`).
+
+| Group | What it proves |
+| --- | --- |
+| 1 versions | the pinned majors are what actually resolved, and `express` resolves the patched `qs` (an `overrides` entry can silently fail to apply) |
+| 2 uploads | multer 2.x runs the real `handleUpload`/`handlePhotoUpload` over a live HTTP server: valid JPEG accepted, non-media 415, oversize 413 via `err instanceof multer.MulterError`, video rejected on the photo route |
+| 3 media | `processUpload()` on real bytes through file-type 22 + sharp 0.35: re-encode, webp thumb, reported width/height/size match the bytes on disk, magic-byte rejection of a fake `.jpg`, `rotate()` + mozjpeg + `{animated, failOn}` still accepted, SVG poster fallback verified by decoding its pixels |
+| 4 parsing | `qs` bracket arrays and nested objects, the 100 kb JSON body cap |
+| 5 https | the `forceHttps` rule: 301 for GET, 308 for POST (301 would drop a login body), `/api/health` and `/socket.io` exempt, already-https passes through, missing `Host` passes through, and it refuses to install without `TRUST_PROXY` |
+| 6 cookies | `httpOnly` + `SameSite=lax`, `Secure` following `NODE_ENV`, `__proto__=` cookies cannot pollute anything |
+| 7 cron | node-cron 4 validates the configured expression, rejects garbage, and a real task actually fires |
+| 8 seed guard | production seeding is refused, and refused again for a `DEMO_PASSWORD` equal to the published one; the opt-in path is *not* blocked; compose no longer seeds on boot |
+| 9-10 config | production env shape, short-secret refusal, TLS resolution reaching the mysql2 driver, and `deploy-check`'s own exit codes on both a good and four broken configurations |
+
+## 2c. Automated: sweep a running deployment
+
+```bash
+npm run sweep -- --base http://localhost:3000 --auth --demo
+```
+
+Needs a server already up (any database, seeded or not - drop `--demo` if nobody
+has signed up yet). It is the only check that proves the *deployed* thing is the
+thing you built: 48+ assertions over the 15 pages, every local asset each page
+references, the auth wall on all 14 API prefixes, the CSRF rejection, the 404
+contract, Secure cookies and the server-side theme paint.
+
+CI runs three jobs on every push: `checks` (lint, `npm test`, audit gate - no
+database), `deploy-verify` (real MySQL 8 service container: migrate twice, seed,
+boot in development mode then run this sweep plus `scripts/smoke-socket.js`, then
+boot in **production** mode and assert the HTTPS upgrade, Secure cookies and the
+seeding refusal), and `docker` (the image itself: built CSS present, no
+devDependencies, config guard fires).
+
+---
+
 ## 3. Manual checklist
 
 ### 3.1 Registration and auth
