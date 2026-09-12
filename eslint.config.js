@@ -3,8 +3,8 @@ import globals from 'globals';
 
 /**
  * Flat config (ESLint 9). Two environments in one repo:
- *   - server/**, db/**   -> Node ESM
- *   - public/js/**       -> browser ESM
+ *   - server/**, db/**, scripts/**  -> Node ESM
+ *   - public/js/**                  -> browser ESM
  */
 export default [
   {
@@ -21,7 +21,7 @@ export default [
 
   // ---------------------------------------------------------------- server
   {
-    files: ['server/**/*.js', 'db/**/*.js', 'scripts/**/*.js', 'eslint.config.js'],
+    files: ['server/**/*.js', 'db/**/*.js', 'scripts/**/*.js', 'scripts/**/*.mjs', 'eslint.config.js'],
     languageOptions: {
       ecmaVersion: 2023,
       sourceType: 'module',

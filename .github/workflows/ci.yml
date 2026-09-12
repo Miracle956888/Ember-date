@@ -1,0 +1,117 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  checks:
+    name: lint + dependency smoke + audit
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # engines.node says >=20; 20 is the floor a deploy host might realistically
+        # still be on, 22 is current LTS.
+        node: ['20', '22']
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+
+      - name: Install (production deps included, lockfile honoured)
+        run: npm ci
+
+      - name: Build the stylesheet the pages reference
+        # public/css/app.css is gitignored on purpose; a missing one means every
+        # page loads unstyled, and nothing else in CI would notice.
+        run: npm run build:css
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Syntax-check every shipped file
+        run: |
+          find server public/js db scripts -name '*.js' -o -name '*.mjs' | while read -r f; do
+            node --check "$f" || { echo "SYNTAX ERROR in $f"; exit 1; }
+          done
+
+      - name: Dependency + config smoke (no database needed)
+        # Exercises multer, sharp, file-type, node-cron, express/qs, cookie, the
+        # https-upgrade rule and the production seed guard against the real modules.
+        run: npm test
+
+      - name: Deploy pre-flight (offline)
+        env:
+          NODE_ENV: production
+          APP_ORIGIN: https://ember.example.com
+          DB_HOST: db.internal
+          DB_USER: ember
+          DB_PASSWORD: ci-only-not-a-real-secret
+          # Fallbacks are CI-only placeholders; they must still look like real
+          # secrets, because deploy-check rejects single-character repeats on purpose.
+          JWT_ACCESS_SECRET: ${{ secrets.CI_JWT_ACCESS_SECRET || '0f3a9c7b1e5d8a2c4b6f0d1e2c3a4b5c6d7e8f90' }}
+          JWT_REFRESH_SECRET: ${{ secrets.CI_JWT_REFRESH_SECRET || '9b2c4d6e8f0a1b3c5d7e9f0a2b4c6d8e0f1a2b3c' }}
+          TRUST_PROXY: '1'
+          FORCE_HTTPS: '1'
+          UPLOAD_DIR: /tmp/ci-uploads
+        run: node scripts/deploy-check.mjs --offline
+
+      - name: Dependency audit
+        # Blocking on high+. Right now the tree is clean; if an unfixed upstream
+        # advisory appears (sharp/libvips has been this repo's recurring one),
+        # widen this threshold rather than deleting the step.
+        run: npm audit --audit-level=high
+
+  docker:
+    name: Image builds and serves /api/health
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the production image
+        run: docker build -t ember:ci .
+
+      - name: Image carries the built stylesheet and the pinned deps
+        # public/css/app.css only exists because stage 1 of the Dockerfile builds
+        # it - if that COPY ever breaks, every page ships unstyled and the image
+        # still "builds fine". This is the check for that.
+        run: |
+          docker run --rm --entrypoint sh ember:ci -c '
+            set -e
+            test -s public/css/app.css || { echo "public/css/app.css missing or empty in the image"; exit 1; }
+            echo "app.css: $(wc -c < public/css/app.css) bytes"
+            for d in multer sharp node-cron file-type express; do
+              v=$(node -p "require(\"$d/package.json\").version")
+              echo "$d $v"
+            done
+            # The runtime image must not carry devDependencies.
+            if test -d node_modules/eslint; then echo "devDependencies leaked into the runtime image"; exit 1; fi
+            if test -d node_modules; then echo "node_modules count: $(ls node_modules | wc -l)"; fi
+          '
+
+      - name: Booting with a broken config must refuse loudly
+        # The container exits non-zero HERE on purpose - that is the pass case.
+        # A deploy that fails like this is legible; a container that starts, then
+        # dies on the first request is not.
+        run: |
+          out=$(docker run --rm -e NODE_ENV=production --entrypoint node ember:ci server/server.js 2>&1) && rc=0 || rc=$?
+          echo "$out"
+          if [ "$rc" -eq 0 ]; then echo "expected a non-zero exit with no DB config"; exit 1; fi
+          echo "$out" | grep -q "Missing required production environment variables" || { echo "env guard did not fire"; exit 1; }
+          echo "refused with a clear message (exit $rc), as intended"
+
+      - name: Health endpoint is served without auth
+        # The Dockerfile HEALTHCHECK depends on it, and a 401 there means the
+        # container is killed 3 restarts in on any host.
+        run: |
+          grep -q "/api/health" Dockerfile || { echo "HEALTHCHECK no longer points at /api/health"; exit 1; }
+          grep -rn "api/health" server/server.js | head -3

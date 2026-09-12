@@ -14,6 +14,7 @@ import { storage } from './src/services/storage.service.js';
 import { checkFfmpeg } from './src/services/upload.service.js';
 import { globalLimiter } from './src/middleware/rateLimit.js';
 import { requireAuth } from './src/middleware/auth.js';
+import { forceHttps } from './src/middleware/https.js';
 import { resetAllPresence } from './src/services/auth.service.js';
 
 import authRoutes from './src/routes/auth.routes.js';
@@ -40,6 +41,16 @@ const app = express();
 
 if (env.TRUST_PROXY || env.isProd) app.set('trust proxy', 1);
 app.disable('x-powered-by');
+
+/**
+ * Public hosts terminate TLS in a proxy (Caddy, Render, Fly), so the app itself
+ * still sees plain HTTP. Without a redirect, anyone who types http:// keeps
+ * sending passwords and cookies in the clear - and the secure cookie flag means
+ * their session silently never sets.
+ */
+if (env.FORCE_HTTPS) {
+  app.use(forceHttps({ trustProxy: env.TRUST_PROXY || env.isProd }));
+}
 
 // ----------------------------------------------------------------- security
 const allowedOrigins = new Set([env.APP_ORIGIN, ...env.EXTRA_ORIGINS]);

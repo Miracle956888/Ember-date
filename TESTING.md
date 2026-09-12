@@ -75,6 +75,34 @@ around **80 ms**, well inside the 300 ms budget.
 
 ---
 
+## 2b. Automated: dependency and config checks (no database needed)
+
+These two run on a fresh clone with nothing but `npm ci`, and they are what CI
+executes. They exist because everything in §1 and §2 needs a live, seeded MySQL,
+which a fresh clone does not have - so a new contributor (or a bot, or a CI runner)
+had no way to check anything at all.
+
+```bash
+npm test                  # scripts/dep-smoke.mjs
+npm run deploy:check -- --offline   # scripts/deploy-check.mjs
+```
+
+**`npm test`** - 100 checks that import the app's own modules and drive them:
+
+| Group | What it proves |
+| --- | --- |
+| 1 versions | the pinned majors are what actually resolved, and `express` resolves the patched `qs` (an `overrides` entry can silently fail to apply) |
+| 2 uploads | multer 2.x runs the real `handleUpload`/`handlePhotoUpload` over a live HTTP server: valid JPEG accepted, non-media 415, oversize 413 via `err instanceof multer.MulterError`, video rejected on the photo route |
+| 3 media | `processUpload()` on real bytes through file-type 22 + sharp 0.35: re-encode, webp thumb, reported width/height/size match the bytes on disk, magic-byte rejection of a fake `.jpg`, `rotate()` + mozjpeg + `{animated, failOn}` still accepted, SVG poster fallback verified by decoding its pixels |
+| 4 parsing | `qs` bracket arrays and nested objects, the 100 kb JSON body cap |
+| 5 https | the `forceHttps` rule: 301 for GET, 308 for POST (301 would drop a login body), `/api/health` and `/socket.io` exempt, already-https passes through, missing `Host` passes through, and it refuses to install without `TRUST_PROXY` |
+| 6 cookies | `httpOnly` + `SameSite=lax`, `Secure` following `NODE_ENV`, `__proto__=` cookies cannot pollute anything |
+| 7 cron | node-cron 4 validates the configured expression, rejects garbage, and a real task actually fires |
+| 8 seed guard | production seeding is refused, and refused again for a `DEMO_PASSWORD` equal to the published one; the opt-in path is *not* blocked; compose no longer seeds on boot |
+| 9-10 config | production env shape, short-secret refusal, TLS resolution reaching the mysql2 driver, and `deploy-check`'s own exit codes on both a good and four broken configurations |
+
+---
+
 ## 3. Manual checklist
 
 ### 3.1 Registration and auth

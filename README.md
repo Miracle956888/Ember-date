@@ -31,7 +31,8 @@ end. No SPA framework, no ORM, no CDN script tags.
 16. [Socket.IO event contract](#socketio-event-contract)
 17. [Security notes](#security-notes)
 18. [Running with Docker](#running-with-docker)
-19. [Troubleshooting](#troubleshooting)
+19. [Deploying to a public host](DEPLOY.md)
+20. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -79,7 +80,15 @@ npm start
 ## Demo logins
 
 `npm run db:seed` creates 12 users. **The password for every account is
-`Password123!`**
+`Password123!`** - which is exactly why seeding is a local-only convenience:
+
+- Under `NODE_ENV=production` the seeder **refuses to run** unless you set
+  `SEED_DEMO=1` *and* a `DEMO_PASSWORD` that is not the published default. It also
+  clears existing rows first, so on a host with real users it would delete them.
+- `docker-compose.yml` no longer seeds on container boot for the same reason - a
+  public deployment used to ship twelve accounts whose password was in the README.
+
+Locally, nothing changes: run `npm run db:seed` and log in as below.
 
 | Email                  | Username           | Notes                                             |
 | ---------------------- | ------------------ | ------------------------------------------------- |
@@ -117,6 +126,17 @@ except the database credentials.
 | `MAX_IMAGE_MB` / `MAX_VIDEO_MB`              | `10` / `50`             | Upload ceilings                                              |
 | `UPLOAD_DIR`                                 | `./uploads`             | Local storage root                                           |
 | `TURN_URL` / `TURN_USERNAME` / `TURN_CREDENTIAL` | empty               | Optional TURN relay for calls across strict NATs             |
+| `TRUST_PROXY`                                 | off (on in prod)        | Read `X-Forwarded-*` behind a proxy: real client IPs for rate limiting, and `req.secure` |
+| `FORCE_HTTPS`                                 | off                     | 301/308 upgrade to https behind that proxy. Needs `TRUST_PROXY`, or it refuses to start rather than loop |
+| `EXTRA_ORIGINS`                               | empty                   | Additional CORS-allowed origins, comma separated              |
+| `DB_SSL`                                      | off                     | `true` for TLS to the database. **Required** by TiDB Cloud Serverless and Aiven free MySQL |
+| `DB_SSL_CA` / `DB_SSL_REJECT_UNAUTHORIZED`     | unset / `true`          | Provider CA bundle path, and whether to verify the certificate  |
+| `DB_POOL_SIZE` / `DB_SOCKET`                    | `10` / unset            | Connection pool size, or a unix socket instead of TCP          |
+| `CLEANUP_CRON`                                  | `*/5 * * * *`           | How often expired rows are actually deleted                    |
+| `LOG_LEVEL`                                     | `info` in prod          | `debug` in development                                         |
+
+Deployment variables and a host comparison live in
+**[DEPLOY.md](DEPLOY.md)**; `npm run deploy:check` verifies them.
 
 ---
 
@@ -130,9 +150,11 @@ except the database credentials.
 | `npm run build:css`   | One-off minified stylesheet build (run before `npm start`)       |
 | `npm start`           | Start the server                                                 |
 | `npm run db:migrate`  | Apply `db/schema.sql` (add `--fresh` to drop and recreate)       |
-| `npm run db:seed`     | Insert demo users, matches and conversations                     |
+| `npm run db:seed`     | Insert demo users, matches and conversations. **Refuses under `NODE_ENV=production`** unless you opt in - see [Demo logins](#demo-logins) |
 | `npm run db:reset`    | `db:migrate --fresh` followed by `db:seed`                       |
 | `npm run lint`        | ESLint over `server/`, `public/js/` and `db/`                    |
+| `npm test`            | `scripts/dep-smoke.mjs`: 100 checks over the real upload, media, cookie, cron, query-parsing and deploy-guard code paths. Needs no database |
+| `npm run deploy:check`| Pre-flight for running somewhere public: origin, TLS, secrets, uploads dir, proxy flags, demo-data policy |
 
 ---
 
@@ -569,7 +591,7 @@ that the requester is a participant, refuses expired attachments, sets
 ```
 .
 ├── db/
-│   ├── schema.sql           # MySQL 8 schema (11 tables), the source of truth
+│   ├── schema.sql           # MySQL 8 schema (42 tables), the source of truth
 │   ├── migrate.js           # applies schema.sql; --fresh drops first
 │   └── seed.js              # 12 demo users, matches, conversations
 ├── public/                  # everything served to the browser
@@ -604,18 +626,33 @@ that the requester is a participant, refuses expired attachments, sets
 │   └── src/
 │       ├── config/env.js    # env parsing, cookie options
 │       ├── db/pool.js       # mysql2 pool + query/execute/withTransaction
-│       ├── middleware/      # auth, csrf, rate limits, multer
+│       ├── middleware/      # auth, csrf, rate limits, multer, https upgrade
 │       ├── routes/          # thin route tables
 │       ├── controllers/     # zod validation + response shaping
 │       ├── services/        # all SQL and business rules
 │       ├── sockets/         # chat + WebRTC signalling handlers
 │       ├── jobs/cleanup.js  # the 24-hour purge
 │       └── utils/           # logger, typed errors, zod schemas
+├── scripts/
+│   ├── dep-smoke.mjs        # `npm test`: dependency + config checks, no DB needed
+│   ├── deploy-check.mjs     # `npm run deploy:check`: pre-flight for a public host
+│   ├── smoke-socket.js      # Socket.IO handshake + chat round trip
+│   └── smoke-browser.js     # drives the pages in a real browser
+├── deploy/
+│   ├── vps.sh               # provisions a bare VPS: docker, compose, Caddy, TLS
+│   ├── roll.sh              # moves a VPS onto a published image, health-gated
+│   └── Caddyfile            # auto-HTTPS reverse proxy for the single-box setup
 ├── src/input.css            # Tailwind source + design system
 ├── tailwind.config.js       # brand palette, shadows, keyframes
-├── Dockerfile
-├── docker-compose.yml
+├── Dockerfile               # multi-stage: builds the CSS, ships prod deps only
+├── docker-compose.yml       # app + MySQL 8 + uploads volume, loopback-published
+├── render.yaml              # Render blueprint (external MySQL; see DEPLOY.md)
+├── fly.toml                 # Fly.io app with a volume for uploads
+├── .dockerignore
+├── .github/workflows/       # ci.yml (lint/test/audit/image) + publish.yml (ghcr)
 ├── eslint.config.js
+├── DEPLOY.md                # host comparison and the exact deploy commands
+├── LICENSE                  # MIT
 ├── README.md
 └── TESTING.md
 ```
@@ -1034,6 +1071,14 @@ full pathname, so `/chat?c=1` does not light up the `/chats` tab.
 
 ### Test suites
 
+> **Those thirty-three suites are not in this repository.** They live in `tmp/`,
+> which is gitignored, so a fresh clone cannot run them. What IS checked in and
+> runnable by anyone: `npm test` (`scripts/dep-smoke.mjs`, 100 checks, no database
+> needed) and `npm run deploy:check`. `scripts/smoke-socket.js` and
+> `scripts/smoke-browser.js` also live here, but both need a server already running
+> with a migrated, seeded database. CI runs the two that need no database, on
+> Node 20 and 22, plus a real `docker build` of the production image.
+
 Thirty-three suites, run together by `node tmp/regress-all.mjs` (which reseeds the
 database between suites, since several mutate fixtures destructively). See
 [TESTING.md](TESTING.md) for what each one covers and for the bugs they caught.
@@ -1053,13 +1098,30 @@ cp .env.example .env      # set the two JWT secrets; compose refuses to start wi
 docker compose up --build
 ```
 
-This starts MySQL 8 with a healthcheck, waits for it, applies the schema, seeds
-the demo data and serves on **http://localhost:3000**. Uploads and database
-files persist in named volumes.
+This starts MySQL 8 with a healthcheck, waits for it, applies the schema and
+serves on **http://localhost:3000**. Uploads and database files persist in named
+volumes, and both services are published on `127.0.0.1` only (set
+`APP_BIND_ADDR=0.0.0.0` / `DB_BIND_ADDR=0.0.0.0` to reach them from a phone on
+your LAN).
+
+Demo data is **not** seeded on boot any more. If you want it locally:
+
+```bash
+# The container runs with NODE_ENV=production, where the seeder refuses on purpose.
+# For a local trial, ask for the dev mode explicitly:
+NODE_ENV=development docker compose up -d
+docker compose exec -e NODE_ENV=development app node db/seed.js
+```
+
+On a host people actually use, keep production and leave demo data alone; if you
+truly want it there, set `SEED_DEMO=1` and a private `DEMO_PASSWORD` (see
+[Demo logins](#demo-logins)).
+
+For a host the internet can reach, use `deploy/vps.sh` - see **[DEPLOY.md](DEPLOY.md)**.
 
 ```bash
 docker compose down       # stop
-docker compose down -v    # stop and erase all data
+docker compose down -v    # stop and erase all data (volumes are named ember_db-data / ember_uploads)
 ```
 
 ---

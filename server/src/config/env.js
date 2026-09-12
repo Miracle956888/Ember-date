@@ -1,4 +1,5 @@
 import 'dotenv/config';
+import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
@@ -46,6 +47,40 @@ if (isProd) {
   }
 }
 
+/**
+ * TLS for the database connection.
+ *
+ * Free managed MySQL (TiDB Cloud Serverless, Aiven) refuses a plaintext
+ * connection outright - "Connections using insecure transport are prohibited" -
+ * so without this the app simply cannot use them. Off by default: a container on
+ * the compose network and a localhost socket do not need it.
+ *
+ *   DB_SSL=false                       no TLS (default)
+ *   DB_SSL=true                        TLS, verified against the system CAs
+ *   DB_SSL=true + DB_SSL_CA=ca.pem     verified against the provider's CA bundle
+ *   DB_SSL=verify-full is not a thing here; to accept a self-signed cert without
+ *   a CA file use DB_SSL_REJECT_UNAUTHORIZED=false, which also accepts an
+ *   impersonating server - use it only when you cannot do better.
+ */
+function dbSsl() {
+  const raw = (process.env.DB_SSL || '').trim().toLowerCase();
+  if (raw === '' || raw === '0' || raw === 'false' || raw === 'off') return undefined;
+
+  const reject = process.env.DB_SSL_REJECT_UNAUTHORIZED;
+  const ssl = {
+    rejectUnauthorized: !(reject === '0' || reject === 'false' || reject === 'no-verify')
+  };
+
+  const ca = (process.env.DB_SSL_CA || '').trim();
+  if (ca) {
+    if (!fs.existsSync(ca)) {
+      throw new Error(`[env] DB_SSL_CA points at a file that does not exist: ${ca}`);
+    }
+    ssl.ca = [fs.readFileSync(ca)];
+  }
+  return ssl;
+}
+
 function int(name, fallback) {
   const raw = process.env[name];
   if (raw === undefined || raw === '') return fallback;
@@ -68,6 +103,9 @@ export const env = Object.freeze({
     .map((s) => s.trim())
     .filter(Boolean),
   TRUST_PROXY: process.env.TRUST_PROXY === '1' || process.env.TRUST_PROXY === 'true',
+  // 301 http -> https using the proxy's X-Forwarded-Proto. Off by default so a
+  // plain-HTTP LAN box or container health check never loops; on for public hosts.
+  FORCE_HTTPS: process.env.FORCE_HTTPS === '1' || process.env.FORCE_HTTPS === 'true',
 
   DB: Object.freeze({
     host: process.env.DB_HOST,
@@ -76,7 +114,8 @@ export const env = Object.freeze({
     password: process.env.DB_PASSWORD || '',
     database: process.env.DB_NAME,
     connectionLimit: int('DB_POOL_SIZE', 10),
-    socketPath: process.env.DB_SOCKET || undefined
+    socketPath: process.env.DB_SOCKET || undefined,
+    ssl: dbSsl()
   }),
 
   JWT: Object.freeze({

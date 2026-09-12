@@ -1,0 +1,80 @@
+# Render blueprint - `render.yaml` is read by "New Blueprint" in the Render dashboard.
+#
+# Things to know before you use it (this sandbox has no network access to Render,
+# so this file is written against their documented blueprint keys but has not been
+# validated against a live Render account):
+#
+# 1. Render does NOT manage MySQL - the `databases:` block is PostgreSQL only.
+#    Create an external MySQL 8 / MariaDB 10.6+ first: TiDB Cloud Serverless
+#    (MySQL protocol, free tier) or Aiven free-tier MySQL both work, and both
+#    hand you a host/user/password triple to paste below.
+# 2. The `free` instance type sleeps after ~15 idle minutes. For a realtime app
+#    that means every socket drops AND the expiry cron stops, so "24-hour"
+#    messages sit in the database until the next cold boot. `starter` is the
+#    cheapest plan that can actually honour the product promise.
+# 3. Uploaded media lives on disk. Render's filesystem is ephemeral unless you
+#    attach a Persistent Disk in the service settings (dashboard-only), so
+#    without one every deploy deletes what people uploaded. See DEPLOY.md.
+
+services:
+  - type: web
+    name: ember
+    runtime: docker
+    dockerfilePath: ./Dockerfile
+    plan: starter
+    # Frankfurt is the closest Render region to Nigeria; pick whatever is nearest
+    # your users.
+    region: frankfurt
+    healthCheckPath: /api/health
+    autoDeploy: true
+    # Run migrations before the new container takes traffic: a schema problem
+    # then fails the deploy instead of serving a half-migrated app. If your
+    # Render account rejects this key, remove it and run `node db/migrate.js`
+    # from the shell in the service view.
+    preDeployCommand: node db/migrate.js
+    envVars:
+      - key: NODE_ENV
+        value: production
+      - key: APP_ORIGIN
+        value: https://ember.onrender.com # change once your real domain is attached
+      - key: DB_HOST
+        sync: false # external MySQL hostname
+      - key: DB_PORT
+        value: "3306"
+      - key: DB_USER
+        sync: false
+      - key: DB_PASSWORD
+        sync: false
+      - key: DB_NAME
+        value: ember
+      # TiDB Cloud Serverless and Aiven both require TLS; without these the
+      # connection is refused with "insecure transport are prohibited".
+      - key: DB_SSL
+        value: "true"
+      # If your provider hands you a CA bundle, mount it into the image and set
+      # DB_SSL_CA to its path. Leaving reject-on without a CA works only when the
+      # provider uses a globally trusted certificate chain.
+      - key: DB_SSL_REJECT_UNAUTHORIZED
+        value: "true"
+      # Render generates real random values for these on first deploy, which is
+      # better than any placeholder you would type at 2am.
+      - key: JWT_ACCESS_SECRET
+        generateValue: true
+      - key: JWT_REFRESH_SECRET
+        generateValue: true
+      - key: MESSAGE_TTL_HOURS
+        value: "24"
+      - key: UPLOAD_DIR
+        value: /var/tmp/ember-uploads
+      # Leave these blank to ship without relay support; calls then only work on
+      # the same network. Fill them after standing up coturn.
+      - key: TURN_URL
+        sync: false
+      - key: TURN_USERNAME
+        sync: false
+      - key: TURN_CREDENTIAL
+        sync: false
+      - key: FORCE_HTTPS
+        value: "1"
+      - key: TRUST_PROXY
+        value: "1"
