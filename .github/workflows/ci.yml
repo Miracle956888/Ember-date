@@ -267,24 +267,31 @@ jobs:
         # public/css/app.css only exists because stage 1 of the Dockerfile builds
         # it - if that COPY ever breaks, every page ships unstyled and the image
         # still "builds fine". This is the check for that.
+        #
+        # The script is piped in rather than quoted inline, for two reasons learned
+        # the hard way here: require("<dep>/package.json") throws
+        # ERR_PACKAGE_PATH_NOT_EXPORTED for sharp / node-cron / file-type (their
+        # "exports" maps hide the file), which looks identical to a missing
+        # dependency, and a single quote inside an inline sh -c "..." closes the
+        # quoting of the whole -c argument, so the container runs half a script.
+        # A quoted heredoc expands nothing in the runner and needs no escaping.
         run: |
-          docker run --rm --entrypoint sh ember:ci -c '
-            set -e
-            test -s public/css/app.css || { echo "public/css/app.css missing or empty in the image"; exit 1; }
-            echo "app.css: $(wc -c < public/css/app.css) bytes"
-            # Read the manifest from disk, not require(): sharp, node-cron and
-            # file-type have "exports" maps that hide ./package.json, and require
-            # then throws ERR_PACKAGE_PATH_NOT_EXPORTED - which looks identical to
-            # "the dependency is missing from the image" and is neither.
-            for d in multer sharp node-cron file-type express; do
-              v=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/$d/package.json','utf8')).version")
-              [ -n "$v" ] || { echo "$d is not installed in the image"; exit 1; }
-              echo "$d $v"
-            done
-            # The runtime image must not carry devDependencies.
-            if test -d node_modules/eslint; then echo "devDependencies leaked into the runtime image"; exit 1; fi
-            if test -d node_modules; then echo "node_modules count: $(ls node_modules | wc -l)"; fi
-          '
+          cat > image-check.sh <<'EOF'
+          set -e
+          cd /app
+          test -s public/css/app.css || { echo "public/css/app.css missing or empty in the image"; exit 1; }
+          echo "app.css: $(wc -c < public/css/app.css) bytes"
+          for d in multer sharp node-cron file-type express cookie cookie-parser jsonwebtoken zod bcrypt mysql2 socket.io; do
+            test -d "node_modules/$d" || { echo "$d is not installed in the runtime image"; exit 1; }
+          done
+          # Read a version straight off disk - the point is proving the manifest is
+          # there, not re-solving it through an exports map.
+          echo "express $(sed -n "s/.*\"version\": \"\([^\"]*\)\".*/\1/p" node_modules/express/package.json | head -1)"
+          if test -d node_modules/eslint; then echo "devDependencies leaked into the runtime image"; exit 1; fi
+          echo "node_modules entries: $(ls node_modules | wc -l)"
+          echo "image contents OK"
+          EOF
+          docker run --rm -i --entrypoint sh ember:ci - < image-check.sh
 
       - name: Booting with a broken config must refuse loudly
         # The container exits non-zero HERE on purpose - that is the pass case.

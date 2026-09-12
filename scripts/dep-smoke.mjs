@@ -596,6 +596,18 @@ for (const { f, doc } of workflows) {
   }
 }
 
+const ciStep = (ci0) => (ci0?.jobs?.docker?.steps || []);
+{
+  const steps = ciStep(yaml.load(fs.readFileSync(path.join(ROOT, '.github', 'workflows', 'ci.yml'), 'utf8')));
+  const img = steps.find((st) => String(st.name).startsWith('Image carries'));
+  const body = String(img?.run || '');
+  check(/<<'EOF'/.test(body) && /docker run --rm -i --entrypoint sh ember:ci - < image-check\.sh/.test(body), 'the image check pipes a quoted heredoc to sh instead of quoting a script inline');
+  const inline = body.split("<<'EOF'")[1]?.split('\nEOF\n')[1] || '';
+  check(!/'/.test(inline.split('docker run')[0] || ''), 'no stray single quotes between the heredoc and the docker call');
+  check(/test -s public\/css\/app\.css/.test(body), 'the image check still asserts the stylesheet was built into the image');
+  check(!/require\(/.test(body), 'the image check does not resolve deps through exports maps');
+}
+
 const ci = workflows.find((w) => w.f === 'ci.yml')?.doc;
 if (ci) {
   const on = ci.on ?? ci[true]; // js-yaml keeps `on` a string key; older loaders made it boolean true
