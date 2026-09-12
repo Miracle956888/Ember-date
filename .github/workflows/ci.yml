@@ -71,6 +71,152 @@ jobs:
         # widen this threshold rather than deleting the step.
         run: npm audit --audit-level=high
 
+  deploy-verify:
+    name: Boot the real app on MySQL 8 and sweep it
+    runs-on: ubuntu-latest
+    # A second job rather than more steps in `checks`: this one needs a database,
+    # and when it fails the thing to read is the app log, not a lint diff.
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: ci-root-password
+          MYSQL_DATABASE: ember_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h 127.0.0.1 -pci-root-password"
+          --health-interval=5s
+          --health-timeout=5s
+          --health-retries=25
+    env:
+      DB_HOST: 127.0.0.1
+      DB_PORT: '3306'
+      DB_USER: root
+      DB_PASSWORD: ci-root-password
+      DB_NAME: ember_ci
+      APP_ORIGIN: http://localhost:3000
+      # Not real secrets - a throwaway database that dies with the runner. They are
+      # here because env.js demands 32+ chars in production mode, and this job has
+      # to boot in production mode to be worth running.
+      JWT_ACCESS_SECRET: 0f3a9c7b1e5d8a2c4b6f0d1e2c3a4b5c6d7e8f90
+      JWT_REFRESH_SECRET: 9b2c4d6e8f0a1b3c5d7e9f0a2b4c6d8e0f1a2b3c
+      # A sweep plus the socket suite blow far past the per-IP ceilings a full run
+      # would otherwise trip. Only these two blunt caps move: CSRF, the auth
+      # limiter and every authorisation check stay at production values, which is
+      # what makes the 401/403/404 assertions in the sweep meaningful.
+      RATE_LIMIT_GLOBAL_PER_MIN: '100000'
+      RATE_LIMIT_RESET_PER_15MIN: '1000'
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - run: npm ci
+      - run: npm run build:css
+
+      - name: Apply the schema to a real MySQL 8
+        # The canonical schema (no MariaDB rewrite path here), so collation and
+        # generated-column problems surface on the runner instead of on a host.
+        run: node db/migrate.js
+
+      - name: Migrations are idempotent
+        # The container start command re-runs migrate on every deploy; if it were
+        # not re-runnable, every restart after the first would fail the deploy.
+        run: node db/migrate.js
+
+      - name: Boot with seeded data and verify every route, asset and guard
+        # One step: GitHub tears the process tree down between steps, so the server
+        # has to start, be poked and be shut down inside the same shell.
+        run: |
+          set -uo pipefail
+          NODE_ENV=development node server/server.js > server.log 2>&1 &
+          SRV=$!
+          trap 'echo "---- server.log ----"; tail -60 server.log' EXIT
+          for i in $(seq 1 40); do
+            curl -fsS http://127.0.0.1:3000/api/health >/dev/null 2>&1 && break
+            sleep 1
+            if ! kill -0 $SRV 2>/dev/null; then echo "server died during startup"; exit 1; fi
+          done
+          curl -fsS http://127.0.0.1:3000/api/health || { echo "never became healthy"; exit 1; }
+          echo "== seeded demo data (development mode: the seeder's own guard allows this) =="
+          node db/seed.js
+          echo "== route sweep =="
+          node scripts/route-sweep.mjs --base http://127.0.0.1:3000 --auth --demo
+          echo "== realtime suite =="
+          BASE=http://127.0.0.1:3000 node scripts/smoke-socket.js
+          kill $SRV 2>/dev/null || true
+          wait $SRV 2>/dev/null || true
+          trap - EXIT
+
+      - name: Boot the same build in production mode and check the deploy guards
+        run: |
+          set -uo pipefail
+          NODE_ENV=production TRUST_PROXY=1 FORCE_HTTPS=1 node server/server.js > prod.log 2>&1 &
+          SRV=$!
+          trap 'echo "---- prod.log ----"; tail -60 prod.log' EXIT
+          for i in $(seq 1 40); do
+            curl -fsS -H 'X-Forwarded-Proto: https' http://127.0.0.1:3000/api/health >/dev/null 2>&1 && break
+            sleep 1
+            kill -0 $SRV 2>/dev/null || { echo "server died"; exit 1; }
+          done
+          code() { curl -sS -o /dev/null -w '%{http_code}' "$@"; }
+          echo "GET /login over plain http (must upgrade):  $(code http://127.0.0.1:3000/login)"
+          [ "$(code http://127.0.0.1:3000/login)" = "301" ] || { echo "expected 301"; exit 1; }
+          echo "POST /api/auth/login over http (308 keeps the body): $(code -X POST http://127.0.0.1:3000/api/auth/login)"
+          [ "$(code -X POST http://127.0.0.1:3000/api/auth/login)" = "308" ] || { echo "expected 308"; exit 1; }
+          echo "GET /api/health unproxied (exempt, no loop): $(code http://127.0.0.1:3000/api/health)"
+          [ "$(code http://127.0.0.1:3000/api/health)" = "200" ] || { echo "health must stay reachable for the container HEALTHCHECK"; exit 1; }
+          echo "GET /socket.io unproxied (exempt): $(code 'http://127.0.0.1:3000/socket.io/?EIO=4&transport=polling')"
+          [ "$(code 'http://127.0.0.1:3000/socket.io/?EIO=4&transport=polling')" != "301" ] || { echo "socket.io was redirected"; exit 1; }
+          echo "GET /login via proxy (passes through): $(code -H 'X-Forwarded-Proto: https' http://127.0.0.1:3000/login)"
+          [ "$(code -H 'X-Forwarded-Proto: https' http://127.0.0.1:3000/login)" = "200" ] || { echo "expected 200 behind the proxy"; exit 1; }
+          echo "== Secure cookies in production =="
+          hdrs=$(curl -sSD - -o /dev/null -H 'X-Forwarded-Proto: https' -H 'content-type: application/json' \
+                 -d '{"email":"amara@example.com","password":"Password123!"}' http://127.0.0.1:3000/api/auth/login)
+          echo "$hdrs" | grep -i 'set-cookie' | sed -n '1,3p'
+          echo "$hdrs" | grep -qi 'ec_at=.*Secure' || { echo "access cookie is not Secure in production"; exit 1; }
+          echo "== demo data cannot be seeded on a public host =="
+          if NODE_ENV=production node db/seed.js > seed-prod.log 2>&1; then
+            echo "seed SUCCEEDED in production - the guard is gone"; exit 1
+          fi
+          grep -q "refusing to create demo accounts" seed-prod.log || { echo "wrong failure:"; cat seed-prod.log; exit 1; }
+          echo "refused as designed"
+          kill $SRV 2>/dev/null || true
+          wait $SRV 2>/dev/null || true
+          trap - EXIT
+
+      - name: deploy:check against the live database
+        # Not --offline: the database is really there, so this also proves the
+        # schema check and the demo-account detection work against real data.
+        env:
+          NODE_ENV: production
+          TRUST_PROXY: '1'
+          FORCE_HTTPS: '1'
+          UPLOAD_DIR: /tmp/ci-uploads
+        run: |
+          node scripts/deploy-check.mjs | tee check.log
+          # Demo accounts DO exist here (the suite seeded them), and this is not a
+          # host anyone else can reach, so the checker should say so without
+          # blocking: production + @example.com users is the one thing it flags.
+          grep -q "demo accounts on a production host" check.log || { echo "checker missed the seeded demo accounts"; exit 1; }
+          grep -q "database reachable" check.log || { echo "checker skipped the live database"; exit 1; }
+          grep -q "schema applied" check.log || { echo "checker did not see 42 tables"; exit 1; }
+
+      - name: Upload the server logs
+        if: failure()
+        uses: actions/upload-artifact@v4
+        with:
+          name: deploy-verify-logs
+          path: |
+            server.log
+            prod.log
+            seed-prod.log
+            check.log
+
   docker:
     name: Image builds and serves /api/health
     runs-on: ubuntu-latest

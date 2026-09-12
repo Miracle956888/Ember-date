@@ -101,6 +101,25 @@ npm run deploy:check -- --offline   # scripts/deploy-check.mjs
 | 8 seed guard | production seeding is refused, and refused again for a `DEMO_PASSWORD` equal to the published one; the opt-in path is *not* blocked; compose no longer seeds on boot |
 | 9-10 config | production env shape, short-secret refusal, TLS resolution reaching the mysql2 driver, and `deploy-check`'s own exit codes on both a good and four broken configurations |
 
+## 2c. Automated: sweep a running deployment
+
+```bash
+npm run sweep -- --base http://localhost:3000 --auth --demo
+```
+
+Needs a server already up (any database, seeded or not - drop `--demo` if nobody
+has signed up yet). It is the only check that proves the *deployed* thing is the
+thing you built: 48+ assertions over the 15 pages, every local asset each page
+references, the auth wall on all 14 API prefixes, the CSRF rejection, the 404
+contract, Secure cookies and the server-side theme paint.
+
+CI runs three jobs on every push: `checks` (lint, `npm test`, audit gate - no
+database), `deploy-verify` (real MySQL 8 service container: migrate twice, seed,
+boot in development mode then run this sweep plus `scripts/smoke-socket.js`, then
+boot in **production** mode and assert the HTTPS upgrade, Secure cookies and the
+seeding refusal), and `docker` (the image itself: built CSS present, no
+devDependencies, config guard fires).
+
 ---
 
 ## 3. Manual checklist

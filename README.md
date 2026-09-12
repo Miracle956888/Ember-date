@@ -155,6 +155,7 @@ Deployment variables and a host comparison live in
 | `npm run lint`        | ESLint over `server/`, `public/js/` and `db/`                    |
 | `npm test`            | `scripts/dep-smoke.mjs`: 100 checks over the real upload, media, cookie, cron, query-parsing and deploy-guard code paths. Needs no database |
 | `npm run deploy:check`| Pre-flight for running somewhere public: origin, TLS, secrets, uploads dir, proxy flags, demo-data policy |
+| `npm run sweep -- --base https://your-host --auth --demo` | Walk a **running** deployment: all 15 pages, every asset they reference, the auth wall, CSRF, the 404 contract, and the theme paint |
 
 ---
 

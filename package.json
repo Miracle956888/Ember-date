@@ -21,7 +21,8 @@
     "lint": "eslint \"server/**/*.js\" \"public/js/**/*.js\" \"db/**/*.js\" \"scripts/**/*.mjs\"",
     "lint:fix": "eslint --fix \"server/**/*.js\" \"public/js/**/*.js\" \"db/**/*.js\" \"scripts/**/*.mjs\"",
     "test": "node scripts/dep-smoke.mjs",
-    "deploy:check": "node scripts/deploy-check.mjs"
+    "deploy:check": "node scripts/deploy-check.mjs",
+    "sweep": "node scripts/route-sweep.mjs"
   },
   "dependencies": {
     "bcryptjs": "^2.4.3",
