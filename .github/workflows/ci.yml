@@ -53,7 +53,12 @@ jobs:
         env:
           NODE_ENV: production
           APP_ORIGIN: https://ember.example.com
-          DB_HOST: db.internal
+          # `db` is the compose hostname, which deploy-check treats as a private
+          # network (no DB_SSL required); a public-looking host with no TLS would
+          # correctly be a blocking finding and would fail this step.
+          DB_HOST: db
+          DB_PORT: '3306'
+          DB_NAME: ember_ci
           DB_USER: ember
           DB_PASSWORD: ci-only-not-a-real-secret
           # Fallbacks are CI-only placeholders; they must still look like real
@@ -268,8 +273,13 @@ jobs:
             set -e
             test -s public/css/app.css || { echo "public/css/app.css missing or empty in the image"; exit 1; }
             echo "app.css: $(wc -c < public/css/app.css) bytes"
+            # Read the manifest from disk, not require(): sharp, node-cron and
+            # file-type have "exports" maps that hide ./package.json, and require
+            # then throws ERR_PACKAGE_PATH_NOT_EXPORTED - which looks identical to
+            # "the dependency is missing from the image" and is neither.
             for d in multer sharp node-cron file-type express; do
-              v=$(node -p "require(\"$d/package.json\").version")
+              v=$(node -p "JSON.parse(require('fs').readFileSync('node_modules/$d/package.json','utf8')).version")
+              [ -n "$v" ] || { echo "$d is not installed in the image"; exit 1; }
               echo "$d $v"
             done
             # The runtime image must not carry devDependencies.
@@ -282,11 +292,21 @@ jobs:
         # A deploy that fails like this is legible; a container that starts, then
         # dies on the first request is not.
         run: |
+          # Nothing set at all: the base list fires first (DB_HOST/APP_ORIGIN come
+          # from the environment, not from a .env baked into the image).
           out=$(docker run --rm -e NODE_ENV=production --entrypoint node ember:ci server/server.js 2>&1) && rc=0 || rc=$?
           echo "$out"
           if [ "$rc" -eq 0 ]; then echo "expected a non-zero exit with no DB config"; exit 1; fi
-          echo "$out" | grep -q "Missing required production environment variables" || { echo "env guard did not fire"; exit 1; }
+          echo "$out" | grep -q "Missing required environment variables" || { echo "base env guard did not fire"; exit 1; }
           echo "refused with a clear message (exit $rc), as intended"
+          # Base config present but production secrets absent: the prod-only guard.
+          out=$(docker run --rm -e NODE_ENV=production -e DB_HOST=db -e DB_PORT=3306 \
+            -e DB_USER=ember -e DB_NAME=ember -e DB_PASSWORD= -e APP_ORIGIN=https://x.test \
+            --entrypoint node ember:ci server/server.js 2>&1) && rc=0 || rc=$?
+          if [ "$rc" -eq 0 ]; then echo "expected a non-zero exit with no JWT secrets"; exit 1; fi
+          echo "$out" | tail -3
+          echo "$out" | grep -q "Missing required production environment variables: JWT_ACCESS_SECRET, JWT_REFRESH_SECRET" || { echo "production secret guard did not fire"; exit 1; }
+          echo "production secret guard fires too, and names exactly the missing vars"
 
       - name: Health endpoint is served without auth
         # The Dockerfile HEALTHCHECK depends on it, and a 401 there means the
