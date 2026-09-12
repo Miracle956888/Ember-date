@@ -568,7 +568,7 @@ section('12. CI workflow files are valid for the Actions schema, not just YAML')
 // beyond "the workflow is not valid". That happened to this repo's ci.yml, so the
 // rule is asserted here instead of discovered at deploy time.
 const yaml = nodeRequire('js-yaml');
-const workflows = ['ci.yml', 'publish.yml'].map((f) => {
+const workflows = ['ci.yml', 'publish.yml', 'verify-live.yml'].map((f) => {
   const text = fs.readFileSync(path.join(ROOT, '.github', 'workflows', f), 'utf8');
   let doc = null;
   try {

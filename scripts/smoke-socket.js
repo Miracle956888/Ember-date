@@ -6,13 +6,24 @@
 import { io } from 'socket.io-client';
 
 const BASE = process.env.BASE || 'http://localhost:3000';
-const CONV = 3;
+// Defaults are the seeded development accounts, because that is the only place
+// this has ever been run. Against a real host, point it at two accounts that
+// share a conversation:
+//   BASE=https://your.host SMOKE_PASSWORD=... SMOKE_EMAIL_A=... SMOKE_EMAIL_B=... \
+//   SMOKE_CONVERSATION=12 node scripts/smoke-socket.js
+// The password is an environment variable rather than a literal, so nothing that
+// looks like a credential is committed to the repository.
+const CONV = Number(process.env.SMOKE_CONVERSATION || 3);
+const EMAIL_A = process.env.SMOKE_EMAIL_A || 'amara@example.com';
+const EMAIL_B = process.env.SMOKE_EMAIL_B || 'kelechi@example.com';
+const EMAIL_C = process.env.SMOKE_EMAIL_C || 'zainab@example.com';
+const PASSWORD = process.env.SMOKE_PASSWORD || 'Password123!';
 
 async function login(email) {
   const res = await fetch(`${BASE}/api/auth/login`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ email, password: 'Password123!' })
+    body: JSON.stringify({ email, password: PASSWORD })
   });
   if (!res.ok) throw new Error(`login failed for ${email}: ${res.status}`);
   const cookies = res.headers.getSetCookie().map((c) => c.split(';')[0]).join('; ');
@@ -48,8 +59,8 @@ const check = (name, ok, extra = '') => {
 };
 
 async function main() {
-  const amara = await login('amara@example.com');
-  const kelechi = await login('kelechi@example.com');
+  const amara = await login(EMAIL_A);
+  const kelechi = await login(EMAIL_B);
 
   const a = await connect(amara.cookies);
   const k = await connect(kelechi.cookies);
@@ -71,7 +82,7 @@ async function main() {
   check('both join conversation', joinA.ok && joinK.ok, `history=${joinA.messages.length}`);
 
   // --- non-participant cannot join
-  const zainab = await login('zainab@example.com');
+  const zainab = await login(EMAIL_C);
   const z = await connect(zainab.cookies);
   const joinZ = await z.socket.emitWithAck('chat:join', { conversationId: CONV });
   check('non-participant refused', joinZ.ok === false);

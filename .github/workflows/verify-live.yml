@@ -1,0 +1,149 @@
+name: Verify a live deployment
+
+# Runs the project's own verification against a URL real people use, instead of
+# against a container on a CI machine. This exists because the tooling is only
+# half the job: "deployed" is a claim about a public origin, and the way to know
+# it is to ask that origin.
+#
+# It also works around a practical limit. A runner has ordinary internet access;
+# an agent sandbox may not (this repo was built in one that could not reach
+# *.onrender.com at all). So when the host is live, this is the check to run -
+# Actions tab -> Verify a live deployment -> Run workflow.
+
+on:
+  workflow_dispatch:
+    inputs:
+      url:
+        description: 'Public origin to verify (no trailing slash)'
+        required: true
+        default: 'https://ember.onrender.com'
+      account_email:
+        description: 'Account to sign in as (optional - blank skips the signed-in checks)'
+        required: false
+        default: ''
+      checks:
+        description: 'Which passes to run'
+        type: choice
+        required: false
+        default: 'pages+socket'
+        options:
+          - pages
+          - pages+socket
+          - pages+socket+preflight
+
+permissions:
+  contents: read
+
+jobs:
+  verify:
+    name: ${{ inputs.url }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    env:
+      TARGET: ${{ inputs.url }}
+      SWEEP_EMAIL: ${{ inputs.account_email }}
+      # Set once in the repo's secrets and never printed. GitHub masks anything
+      # that came from a secret in the log automatically.
+      SWEEP_PASSWORD: ${{ secrets.SWEEP_PASSWORD }}
+      SMOKE_PASSWORD: ${{ secrets.SWEEP_PASSWORD }}
+      DB_HOST: ${{ secrets.DB_HOST }}
+      DB_PORT: ${{ secrets.DB_PORT }}
+      DB_USER: ${{ secrets.DB_USER }}
+      DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
+      DB_NAME: ${{ secrets.DB_NAME }}
+      DB_SSL: 'true'
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: The target has to be a public https origin
+        # Guard the obvious mistakes: an http URL proves nothing about TLS, and a
+        # localhost target would pass while testing nothing.
+        run: |
+          set -euo pipefail
+          case "$TARGET" in
+            https://*.*) ;;
+            *) echo "TARGET must be a public https URL, got: '$TARGET'"; exit 1 ;;
+          esac
+          case "$TARGET" in
+            *localhost*|*://127.*|*://0.0.0.0*|*://10.*|*://192.168.*)
+              echo "refusing to verify a non-public origin: $TARGET"; exit 1 ;;
+          esac
+          echo "verifying $TARGET"
+
+      - name: Is it reachable at all
+        # Kept separate from the sweep because "the host never answers" and "the
+        # host answers and the CSS is broken" are different problems with
+        # different fixes, and the runner's message is the only report you get.
+        run: |
+          set -uo pipefail
+          code=$(curl -sS -o /dev/null -w '%{http_code}' -m 20 "$TARGET/api/health" 2>/dev/null || echo 000)
+          echo "GET /api/health -> $code"
+          if [ "$code" = "000" ]; then
+            echo
+            echo "Nothing answered over TLS. Check, in order: the Render service is"
+            echo "actually running (not sleeping, not failing its health check); the"
+            echo "URL is the one Render shows on the service overview; and APP_ORIGIN"
+            echo "equals this origin exactly."
+            exit 1
+          fi
+          [ "$code" = "200" ] || { echo "health endpoint did not return 200"; exit 1; }
+          echo
+          echo "== TLS =="
+          curl -sSIv -o /dev/null -m 20 "$TARGET/api/health" 2>&1 \
+            | grep -E 'SSL connection using|subject:|issuer:|expire date' | sed 's/^* //'
+          echo
+          echo "== plain http must upgrade, not serve =="
+          echo "GET http://.../login -> $(curl -sS -o /dev/null -w '%{http_code}' -m 20 "$(echo "$TARGET" | sed 's|^https://|http://|')/login") (expect 301)"
+          echo
+          echo "== response headers =="
+          curl -sSI -m 20 "$TARGET/" | grep -iE '^(strict-transport|content-security|x-frame|x-content-type|referrer-policy|server):' || echo "(none of the hardening headers present)"
+
+      - name: Install dependencies for the sweep scripts
+        run: npm ci --no-audit --no-fund
+
+      - name: Route sweep - pages, assets, auth wall, CSRF, 404 contract
+        # --auth is deliberately NOT passed: it registers a throwaway account,
+        # which belongs in a CI database and not in a real one.
+        run: |
+          set -euo pipefail
+          if [ -n "${SWEEP_EMAIL:-}" ]; then
+            node scripts/route-sweep.mjs --base "$TARGET" --demo
+          else
+            node scripts/route-sweep.mjs --base "$TARGET"
+          fi
+
+      - name: Socket.IO realtime suite
+        if: inputs.checks == 'pages+socket' || inputs.checks == 'pages+socket+preflight'
+        run: |
+          set -euo pipefail
+          if [ -z "${SWEEP_EMAIL:-}" ]; then
+            echo "skipping: the realtime suite signs in as two accounts that share a"
+            echo "conversation. Give it an account with the account_email input, or"
+            echo "set SMOKE_EMAIL_A/SMOKE_EMAIL_B/SMOKE_CONVERSATION for a live host."
+            exit 0
+          fi
+          BASE="$TARGET" node scripts/smoke-socket.js
+
+      - name: Pre-flight against the live database
+        if: inputs.checks == 'pages+socket+preflight'
+        run: |
+          set -euo pipefail
+          if [ -z "${DB_HOST:-}" ]; then
+            echo "skipping: needs DB_HOST/DB_USER/DB_PASSWORD/DB_NAME repo secrets."
+            echo "These are only used by this job to ask the database the questions"
+            echo "deploy-check asks; nothing is written to the repository."
+            exit 0
+          fi
+          NODE_ENV=production APP_ORIGIN="$TARGET" TRUST_PROXY=1 FORCE_HTTPS=1 \
+            UPLOAD_DIR=/tmp/not-used npm run deploy:check
+
+      - name: Tell me what failed where it is easy to read
+        if: failure()
+        run: |
+          {
+            echo "### Live verification failed for $TARGET"
+            echo
+            echo "Re-run with \`pages\` only to separate app problems from host problems."
+            echo "The commands are the same ones \`npm run sweep\` and \`npm run deploy:check\`"
+            echo "run locally, so anything red here is red for a real visitor."
+          } >> "$GITHUB_STEP_SUMMARY"

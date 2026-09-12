@@ -31,8 +31,12 @@ const flag = (name) => argv.includes(`--${name}`);
 const BASE = (arg('base', 'http://localhost:3000') || '').replace(/\/+$/, '');
 const WANT_AUTH = flag('auth');
 const WANT_DEMO = flag('demo');
-const DEMO_EMAIL = 'amara@example.com';
-const DEMO_PASSWORD = 'Password123!';
+// The seeded pair by default, because that is what CI boots. Against a real host
+// there is no seed (db/seed.js refuses to run in production), so pass your own
+// account through the environment instead of editing this file:
+//   SWEEP_EMAIL=you@example.com SWEEP_PASSWORD='...' npm run sweep -- --base ... --demo
+const DEMO_EMAIL = process.env.SWEEP_EMAIL || 'amara@example.com';
+const DEMO_PASSWORD = process.env.SWEEP_PASSWORD || 'Password123!';
 
 const PAGES = [
   'index', 'login', 'register', 'app', 'matches', 'chats', 'chat', 'call',
