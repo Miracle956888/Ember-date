@@ -305,7 +305,8 @@ export const tapSchema = z.object({
 export const favoriteSchema = z.object({ targetId: numericIdSchema });
 
 export const verificationSchema = z.object({
-  gesture: trimmed(z.string().min(1).max(40))
+  challengeId: uuidSchema,
+  challengeToken: trimmed(z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'That photo-verification challenge is not valid.'))
 });
 
 export const shareLocationSchema = z.object({

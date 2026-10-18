@@ -35,6 +35,7 @@ import { iceServers } from './src/controllers/message.controller.js';
 
 import { initSockets, closeSockets } from './src/sockets/index.js';
 import { startCleanupJob, stopCleanupJob } from './src/jobs/cleanup.js';
+import { startDeliveryJob, stopDeliveryJob } from './src/services/delivery.service.js';
 
 const log = logger.child('server');
 const app = express();
@@ -116,7 +117,9 @@ app.use((req, res, next) => {
     if (req.path.startsWith('/socket.io')) return;
     const ms = Date.now() - started;
     const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'debug';
-    logger[level](`${req.method} ${req.originalUrl} ${res.statusCode}`, { ms });
+    // Query strings can carry bearer credentials (for example a third-party
+    // client may still submit a reset token as a query param). Log path only.
+    logger[level](`${req.method} ${req.path} ${res.statusCode}`, { ms });
   });
   next();
 });
@@ -176,7 +179,7 @@ app.use(express.static(env.PUBLIC_DIR, staticOptions));
 // (script-src 'self') rules out the usual inline anti-FOUC snippet, so the
 // class is applied server-side instead -- no flash of white on a dark reload.
 const PAGES = [
-  'index', 'login', 'register', 'app', 'matches', 'chats', 'chat', 'call',
+  'index', 'login', 'register', 'forgot-password', 'reset-password', 'app', 'matches', 'chats', 'chat', 'call',
   'profile', 'nearby', 'likes', 'settings', 'u', 'moments', 'admin'
 ];
 const pageCache = new Map();
@@ -243,7 +246,7 @@ app.use((err, req, res, _next) => {
   if (status >= 500) {
     log.error('unhandled error', { message: err.message, stack: err.stack, path: req.originalUrl });
   } else {
-    log.warn('request error', { message: err.message, status, path: req.originalUrl });
+    log.warn('request error', { message: err.message, status, path: req.path });
   }
 
   if (err.message === 'Not allowed by CORS') {
@@ -270,6 +273,7 @@ async function start() {
 
   initSockets(server);
   startCleanupJob();
+  startDeliveryJob();
 
   await new Promise((resolve) => server.listen(env.PORT, '0.0.0.0', resolve));
   log.info(`listening on http://0.0.0.0:${env.PORT}`, {
@@ -293,6 +297,7 @@ async function shutdown(signal) {
 
   try {
     stopCleanupJob();
+    stopDeliveryJob();
     await closeSockets();
     await new Promise((resolve) => server.close(resolve));
     await closePool();

@@ -139,26 +139,81 @@ export async function optionalAuth(req, _res, next) {
 
 // ------------------------------------------------------------ role gating
 
-/** Privilege ordering. A role satisfies any requirement at or below its rank. */
-const ROLE_RANK = { user: 0, moderator: 1, admin: 2 };
+/**
+ * Staff permissions are explicit rather than inferred from rank. This keeps an
+ * analyst or auditor from inheriting moderation powers just because their role
+ * sorts above a normal user. `super_admin` is the only wildcard role.
+ */
+export const ROLE_PERMISSIONS = Object.freeze({
+  user: [],
+  support_agent: ['admin:access', 'reports:read', 'reports:notes', 'users:read_basic', 'users:read_detail'],
+  analyst: ['admin:access', 'analytics:read'],
+  moderator: [
+    'admin:access', 'reports:read', 'reports:manage', 'reports:notes',
+    'users:read_basic', 'users:read_detail', 'users:suspend', 'users:restore',
+    'content:remove', 'verification:read', 'verification:review'
+  ],
+  auditor: ['admin:access', 'audit:read', 'activity:read'],
+  admin: [
+    'admin:access', 'reports:read', 'reports:manage', 'reports:notes',
+    'users:read_basic', 'users:read_detail', 'users:read_sensitive',
+    'users:suspend', 'users:restore', 'users:ban', 'roles:manage',
+    'content:remove', 'verification:read', 'verification:review',
+    'audit:read', 'audit:read_sensitive', 'activity:read', 'analytics:read',
+    'system:read', 'system:health'
+  ],
+  super_admin: ['*']
+});
+
+const ROLE_RANK = {
+  user: 0,
+  support_agent: 1,
+  analyst: 1,
+  moderator: 2,
+  auditor: 2,
+  admin: 3,
+  super_admin: 4
+};
 
 export function rankOf(role) {
   return ROLE_RANK[role] ?? 0;
 }
 
+export function hasPermission(role, permission) {
+  const permissions = ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.user;
+  return permissions.includes('*') || permissions.includes(permission);
+}
+
+export function permissionsForRole(role) {
+  return hasPermission(role, '*') ? ['*'] : [...(ROLE_PERMISSIONS[role] || ROLE_PERMISSIONS.user)];
+}
+
 /**
- * Require a minimum role. Must be mounted *after* `requireAuth`, which is what
- * puts `role` on `req.user`.
- *
- * A signed-in user who lacks the role gets 404, not 403: confirming that
- * `/api/admin/*` exists tells an attacker where to point their effort. The
- * unauthenticated case still 401s via `requireAuth`.
+ * Require an explicitly defined minimum legacy role. Sibling staff roles do
+ * not inherit each other's rights; only moderator/admin/super_admin satisfy
+ * the old moderation/admin gates.
  */
 export function requireRole(minRole) {
-  const needed = rankOf(minRole);
+  const allowed = {
+    user: Object.keys(ROLE_PERMISSIONS),
+    moderator: ['moderator', 'admin', 'super_admin'],
+    admin: ['admin', 'super_admin'],
+    super_admin: ['super_admin']
+  }[minRole] || [minRole];
+
   return function roleGate(req, _res, next) {
     if (!req.user) return next(unauthorized('You need to sign in to do that.', { code: 'NO_TOKEN' }));
-    if (rankOf(req.user.role) < needed) {
+    if (!allowed.includes(req.user.role)) {
+      return next(new AppError(404, 'Not found.', { code: 'NOT_FOUND' }));
+    }
+    return next();
+  };
+}
+
+export function requirePermission(permission) {
+  return function permissionGate(req, _res, next) {
+    if (!req.user) return next(unauthorized('You need to sign in to do that.', { code: 'NO_TOKEN' }));
+    if (!hasPermission(req.user.role, permission)) {
       return next(new AppError(404, 'Not found.', { code: 'NOT_FOUND' }));
     }
     return next();

@@ -6,9 +6,10 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileTypeFromBuffer } from 'file-type';
 import sharp from 'sharp';
-import ffmpeg from 'fluent-ffmpeg';
 import { query, queryOne, execute } from '../db/pool.js';
 import { storage } from './storage.service.js';
 import { env } from '../config/env.js';
@@ -23,6 +24,7 @@ import {
 import { logger } from '../utils/logger.js';
 
 const log = logger.child('upload');
+const execFileAsync = promisify(execFile);
 const THUMB_WIDTH = 400;
 
 let ffmpegAvailable = null;
@@ -30,14 +32,17 @@ let ffmpegAvailable = null;
 /** Probe once whether ffmpeg exists; degrade gracefully when it does not. */
 export function checkFfmpeg() {
   if (ffmpegAvailable !== null) return Promise.resolve(ffmpegAvailable);
-  return new Promise((resolve) => {
-    ffmpeg.getAvailableFormats((err) => {
-      ffmpegAvailable = !err;
-      if (err) log.warn('ffmpeg not available - videos will use a generic poster');
-      else log.info('ffmpeg available - video posters enabled');
-      resolve(ffmpegAvailable);
+  return execFileAsync('ffmpeg', ['-version'], { timeout: 5000, maxBuffer: 64 * 1024 })
+    .then(() => {
+      ffmpegAvailable = true;
+      log.info('ffmpeg available - video posters enabled');
+      return true;
+    })
+    .catch(() => {
+      ffmpegAvailable = false;
+      log.warn('ffmpeg not available - videos will use a generic poster');
+      return false;
     });
-  });
 }
 
 /** Generic branded poster used when ffmpeg is missing or fails. */
@@ -63,31 +68,33 @@ async function extractPoster(absVideoPath) {
   const outFile = path.join(tmpDir, 'poster.png');
 
   try {
-    const durationSecs = await new Promise((resolve) => {
-      ffmpeg.ffprobe(absVideoPath, (err, data) => {
-        if (err) return resolve(null);
-        const d = data?.format?.duration;
-        return resolve(d ? Math.round(Number(d)) : null);
-      });
-    });
+    let durationSecs = null;
+    try {
+      const { stdout } = await execFileAsync(
+        'ffprobe',
+        ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', absVideoPath],
+        { timeout: 10_000, maxBuffer: 256 * 1024 }
+      );
+      const duration = Number(JSON.parse(stdout)?.format?.duration);
+      if (Number.isFinite(duration) && duration > 0) durationSecs = Math.round(duration);
+    } catch {
+      // Poster extraction can still work if duration probing fails.
+    }
 
-    await new Promise((resolve, reject) => {
-      ffmpeg(absVideoPath)
-        .on('error', reject)
-        .on('end', resolve)
-        .screenshots({
-          timestamps: ['00:00:01.000'],
-          filename: 'poster.png',
-          folder: tmpDir,
-          size: '640x?'
-        });
-    });
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-hide_banner', '-loglevel', 'error', '-ss', '1', '-i', absVideoPath,
+        '-frames:v', '1', '-vf', 'scale=640:-2', '-an', '-y', outFile
+      ],
+      { timeout: 30_000, maxBuffer: 1024 * 1024 }
+    );
 
     const raw = await fsp.readFile(outFile);
     const buffer = await sharp(raw).resize({ width: THUMB_WIDTH, withoutEnlargement: true }).webp({ quality: 78 }).toBuffer();
     return { buffer, generic: false, durationSecs };
   } catch (err) {
-    log.warn('poster extraction failed, using generic', { error: err.message });
+    log.warn('poster extraction failed, using generic', { code: err.code || 'FFMPEG_ERROR' });
     return { buffer: await genericPoster(), generic: true, durationSecs: null };
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -113,8 +120,8 @@ export async function processUpload({ buffer, declaredMime, purpose = 'message' 
   if (!isImage && !isVideo) {
     throw unsupported('That file type is not supported. Use JPG, PNG, WebP, GIF, MP4, WebM or MOV.');
   }
-  if (purpose === 'photo' && !isImage) {
-    throw unsupported('Profile photos must be an image.');
+  if ((purpose === 'photo' || purpose === 'verification') && !isImage) {
+    throw unsupported(purpose === 'verification' ? 'Verification evidence must be an image.' : 'Profile photos must be an image.');
   }
   if (declaredMime && declaredMime !== mime && !(declaredMime === 'video/quicktime' && mime === 'video/mp4')) {
     log.debug('declared mime differs from detected', { declaredMime, mime });
@@ -153,15 +160,18 @@ export async function processUpload({ buffer, declaredMime, purpose = 'message' 
         .toBuffer();
       outMime = 'image/webp';
       sizeBytes = out.length;
-      fileKey = storage.newKey('webp', purpose === 'photo' ? 'photos' : '');
+      const directory = purpose === 'photo' ? 'photos' : purpose === 'verification' ? 'verification' : '';
+      fileKey = storage.newKey('webp', directory);
       await storage.save(fileKey, out);
 
-      const thumb = await sharp(buffer, { animated: false, failOn: 'none' })
-        .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
-        .webp({ quality: 78 })
-        .toBuffer();
-      thumbKey = storage.newKey('webp', 'thumbs');
-      await storage.save(thumbKey, thumb);
+      if (purpose !== 'verification') {
+        const thumb = await sharp(buffer, { animated: false, failOn: 'none' })
+          .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
+          .webp({ quality: 78 })
+          .toBuffer();
+        thumbKey = storage.newKey('webp', 'thumbs');
+        await storage.save(thumbKey, thumb);
+      }
     } else {
       // rotate() applies EXIF orientation then the re-encode strips all metadata.
       const out = await sharp(buffer, { failOn: 'none' })
@@ -174,15 +184,18 @@ export async function processUpload({ buffer, declaredMime, purpose = 'message' 
       height = outMeta.height ?? height;
       outMime = 'image/jpeg';
       sizeBytes = out.length;
-      fileKey = storage.newKey('jpg', purpose === 'photo' ? 'photos' : '');
+      const directory = purpose === 'photo' ? 'photos' : purpose === 'verification' ? 'verification' : '';
+      fileKey = storage.newKey('jpg', directory);
       await storage.save(fileKey, out);
 
-      const thumb = await sharp(out)
-        .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
-        .webp({ quality: 78 })
-        .toBuffer();
-      thumbKey = storage.newKey('webp', 'thumbs');
-      await storage.save(thumbKey, thumb);
+      if (purpose !== 'verification') {
+        const thumb = await sharp(out)
+          .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
+          .webp({ quality: 78 })
+          .toBuffer();
+        thumbKey = storage.newKey('webp', 'thumbs');
+        await storage.save(thumbKey, thumb);
+      }
     }
   } else {
     // Video: store as-is (re-encoding 50 MB inline would block), generate poster.
@@ -292,6 +305,12 @@ export async function savePhotoFile(ownerId, buffer, declaredMime) {
     thumbUrl: processed.thumbKey ? photoUrl(processed.thumbKey) : null,
     thumbKey: processed.thumbKey || null
   };
+}
+
+/** Private optimized selfie evidence; never returns a public/media URL. */
+export async function saveVerificationFile(ownerId, buffer, declaredMime) {
+  const processed = await processUpload({ buffer, declaredMime, ownerId, purpose: 'verification' });
+  return { key: processed.fileKey, mime: processed.mime, sizeBytes: processed.sizeBytes };
 }
 
 /**

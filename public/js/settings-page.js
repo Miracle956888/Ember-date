@@ -208,9 +208,6 @@ function wire() {
 
 async function paintVerification() {
   const box = $('#verification-state');
-  // Fire-and-forget at boot and after every verify step, so this must never
-  // reject: navigating away mid-flight aborts the fetch ("Failed to fetch")
-  // and an unhandled rejection surfaces as a red console error the user sees.
   let status;
   try {
     status = await api.verificationStatus();
@@ -224,20 +221,41 @@ async function paintVerification() {
       ${verifiedBadge('h-6 w-6')}
       <div>
         <p class="text-[14px] font-bold text-ink">You are verified</p>
-        <p class="text-[12.5px] text-ink-soft">Your profile shows a blue tick.</p>
+        <p class="text-[12.5px] text-ink-soft">A reviewer approved your photo verification.</p>
       </div>
     </div>`;
     return;
   }
 
-  box.innerHTML = `
-    <p class="text-[13px] text-ink-soft">
-      Take a selfie copying a pose we choose at random. It is only used to confirm you are real,
-      is never shown on your profile, and is deleted once checked.
-    </p>
-    <button type="button" class="btn-primary mt-3" data-action="verify">Verify my photos</button>`;
+  const last = status.lastAttempt;
+  if (last?.status === 'pending') {
+    box.replaceChildren(el('div', { class: 'rounded-2xl bg-brand-50 px-4 py-3' }, [
+      el('p', { class: 'text-[14px] font-bold text-brand-700', text: 'Photo submitted for review' }),
+      el('p', { class: 'mt-1 text-[13px] text-ink-soft', text: 'Your photo is private and visible only to authorised reviewers. A blue tick appears only after approval.' })
+    ]));
+    return;
+  }
 
-  box.querySelector('[data-action="verify"]').addEventListener('click', startVerification);
+  const children = [
+    el('p', {
+      class: 'text-[13px] text-ink-soft',
+      text: 'Copy the short-lived pose challenge and submit a selfie for manual review. Your evidence is private, is not shown on your profile, and is removed after a decision.'
+    })
+  ];
+  if (last?.status === 'rejected') {
+    children.push(el('p', {
+      class: 'mt-2 rounded-xl bg-nope/10 px-3 py-2 text-[13px] text-ink',
+      text: last.note || 'The previous submission was not approved. You can submit a new photo.'
+    }));
+  }
+  const button = el('button', {
+    type: 'button',
+    class: 'btn-primary mt-3',
+    text: last?.status === 'rejected' ? 'Submit a new photo' : 'Request photo review',
+    onClick: startVerification
+  });
+  children.push(button);
+  box.replaceChildren(...children);
 }
 
 async function startVerification() {
@@ -298,10 +316,10 @@ async function startVerification() {
 
     canvas.toBlob(async (blob) => {
       try {
-        await api.submitVerification(challenge.gesture, blob);
+        await api.submitVerification(challenge, blob);
         stopCamera();
         modal.close('done');
-        toast('You are verified 🎉');
+        toast('Photo submitted for manual review.');
         await paintVerification();
       } catch (err) {
         note.textContent = err instanceof ApiError ? err.message : 'That did not work. Try again.';

@@ -1,6 +1,6 @@
 import crypto from 'node:crypto';
 import bcrypt from 'bcryptjs';
-import { query, queryOne, execute } from '../db/pool.js';
+import { queryOne, execute, withTransaction } from '../db/pool.js';
 import { conflict, unauthorized, forbidden, badRequest, tooMany } from '../utils/errors.js';
 
 const BCRYPT_ROUNDS = 12;
@@ -221,36 +221,69 @@ async function recordLoginAttempt(email, ip, ok) {
  * takeover. Callers must NOT reveal whether the address existed.
  */
 export async function createPasswordReset(email) {
-  const user = await findUserByEmail(email);
-  if (!user) return null;
-
-  // One live token at a time: issuing a new one invalidates the old.
-  await execute('DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL', [user.id]);
-
   const token = crypto.randomBytes(32).toString('hex');
-  await execute(
-    `INSERT INTO password_resets (user_id, token_hash, expires_at)
-     VALUES (?, ?, (NOW() + INTERVAL ? MINUTE))`,
-    [user.id, hashToken(token), RESET_TTL_MIN]
-  );
-  return { token, user };
+  const user = await withTransaction(async (conn) => {
+    // Serialize issuances by account. Concurrent requests cannot leave several
+    // live reset tokens behind or race their delete/insert steps.
+    const [users] = await conn.execute(
+      'SELECT id, email, display_name FROM users WHERE email = ? LIMIT 1 FOR UPDATE',
+      [email]
+    );
+    const currentUser = users[0];
+    if (!currentUser) return null;
+
+    await conn.execute('DELETE FROM password_resets WHERE user_id = ? AND used_at IS NULL', [currentUser.id]);
+    await conn.execute(
+      `INSERT INTO password_resets (user_id, token_hash, expires_at)
+       VALUES (?, ?, (NOW() + INTERVAL ? MINUTE))`,
+      [currentUser.id, hashToken(token), RESET_TTL_MIN]
+    );
+    return currentUser;
+  });
+  return user ? { token, user } : null;
 }
 
-/** Consume a reset token and set the new password. Single use. */
+/** Consume a reset token, update credentials and revoke every session atomically. */
 export async function consumePasswordReset(token, newPassword) {
-  const row = await queryOne(
-    `SELECT id, user_id FROM password_resets
+  const tokenHash = hashToken(String(token || ''));
+  const candidate = await queryOne(
+    `SELECT id FROM password_resets
       WHERE token_hash = ? AND used_at IS NULL AND expires_at > NOW() LIMIT 1`,
-    [hashToken(String(token || ''))]
+    [tokenHash]
   );
-  if (!row) throw badRequest('That reset link is invalid or has expired.', { code: 'RESET_INVALID' });
+  if (!candidate) throw badRequest('That reset link is invalid or has expired.', { code: 'RESET_INVALID' });
 
   const passwordHash = await bcrypt.hash(newPassword, BCRYPT_ROUNDS);
-  await execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, row.user_id]);
-  await execute('UPDATE password_resets SET used_at = NOW() WHERE id = ?', [row.id]);
-  // A password change invalidates every existing session.
-  await revokeAllUserTokens(row.user_id);
-  return Number(row.user_id);
+  const userId = await withTransaction(async (conn) => {
+    const [rows] = await conn.execute(
+      `SELECT id, user_id FROM password_resets
+        WHERE token_hash = ? AND used_at IS NULL AND expires_at > NOW()
+        LIMIT 1 FOR UPDATE`,
+      [tokenHash]
+    );
+    const row = rows[0];
+    if (!row) return null;
+
+    const [consumed] = await conn.execute(
+      'UPDATE password_resets SET used_at = NOW() WHERE id = ? AND used_at IS NULL',
+      [row.id]
+    );
+    if (consumed.affectedRows !== 1) return null;
+
+    await conn.execute('UPDATE users SET password_hash = ? WHERE id = ?', [passwordHash, row.user_id]);
+    await conn.execute(
+      'UPDATE refresh_tokens SET revoked_at = NOW() WHERE user_id = ? AND revoked_at IS NULL',
+      [row.user_id]
+    );
+    // Access JWTs are stateless; the epoch closes their remaining TTL window.
+    await conn.execute(
+      'UPDATE users SET sessions_valid_from = (NOW() + INTERVAL 1 SECOND) WHERE id = ?',
+      [row.user_id]
+    );
+    return Number(row.user_id);
+  });
+  if (!userId) throw badRequest('That reset link is invalid or has expired.', { code: 'RESET_INVALID' });
+  return userId;
 }
 
 export function hashToken(token) {
@@ -324,12 +357,74 @@ export async function resetAllPresence() {
   await execute('UPDATE users SET is_online = 0 WHERE is_online = 1');
 }
 
-export async function deleteAccount(userId) {
-  // FKs cascade to photos, swipes, matches, conversations, messages, attachments.
-  const res = await execute('DELETE FROM users WHERE id = ?', [userId]);
-  return res.affectedRows;
+function storedPhotoKey(url, directory) {
+  const match = /^\/api\/photos\/([A-Za-z0-9._-]+)$/.exec(String(url || ''));
+  if (!match || match[1] === '.' || match[1] === '..') return null;
+  return `${directory}/${match[1]}`;
 }
 
-export async function listUserAttachmentPaths(userId) {
-  return query('SELECT file_path, thumb_path FROM attachments WHERE owner_id = ?', [userId]);
+function safeStoredKey(value) {
+  const key = String(value || '');
+  if (!key || key.includes('\\') || key.startsWith('/') || key.split('/').some((part) => !part || part === '.' || part === '..')) return null;
+  return /^[A-Za-z0-9._/-]+$/.test(key) && /\.[a-z0-9]{2,5}$/i.test(key) ? key : null;
+}
+
+/**
+ * Delete an account and transactionally enqueue every owned media key before
+ * FK cascades erase its rows. The worker removes bytes and retries failures;
+ * profile photos are NOT swept by the 24-hour message/content TTL.
+ */
+export async function deleteAccount(userId) {
+  return withTransaction(async (conn) => {
+    const [ownerRows] = await conn.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+    if (!ownerRows.length) return { deleted: false, queuedFiles: 0 };
+
+    const fileKeys = new Set();
+    const collect = (key) => {
+      const safe = safeStoredKey(key);
+      if (safe) fileKeys.add(safe);
+    };
+
+    const [attachments] = await conn.execute(
+      'SELECT file_path, thumb_path FROM attachments WHERE owner_id = ?', [userId]
+    );
+    for (const row of attachments) {
+      collect(row.file_path);
+      collect(row.thumb_path);
+    }
+
+    const [photos] = await conn.execute('SELECT url, thumb_url FROM user_photos WHERE user_id = ?', [userId]);
+    for (const row of photos) {
+      collect(storedPhotoKey(row.url, 'photos'));
+      collect(storedPhotoKey(row.thumb_url, 'thumbs'));
+    }
+    const [profileRows] = await conn.execute('SELECT avatar_url FROM users WHERE id = ?', [userId]);
+    collect(storedPhotoKey(profileRows[0]?.avatar_url, 'photos'));
+
+    const [moments] = await conn.execute('SELECT media_key, thumb_key FROM moments WHERE user_id = ?', [userId]);
+    for (const row of moments) {
+      collect(row.media_key);
+      collect(row.thumb_key);
+    }
+    const [postMedia] = await conn.execute(
+      `SELECT pm.media_key, pm.thumb_key FROM post_media pm
+        JOIN posts p ON p.id = pm.post_id WHERE p.user_id = ?`, [userId]
+    );
+    for (const row of postMedia) {
+      collect(row.media_key);
+      collect(row.thumb_key);
+    }
+    const [evidence] = await conn.execute('SELECT file_path FROM verifications WHERE user_id = ?', [userId]);
+    for (const row of evidence) collect(row.file_path);
+
+    for (const key of fileKeys) {
+      await conn.execute(
+        `INSERT IGNORE INTO media_deletion_queue (file_key, reason) VALUES (?, 'account_deleted')`,
+        [key]
+      );
+    }
+
+    const [result] = await conn.execute('DELETE FROM users WHERE id = ?', [userId]);
+    return { deleted: Number(result.affectedRows) === 1, queuedFiles: fileKeys.size };
+  });
 }

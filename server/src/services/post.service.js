@@ -310,7 +310,7 @@ export async function deletePost(postId, userId, { asModerator = false } = {}) {
       try {
         if (await storage.remove(key)) files += 1;
       } catch (err) {
-        log.warn('media unlink failed', { key, error: err.message });
+        log.warn('media unlink failed', { code: err.code || 'STORAGE_ERROR' });
       }
     }
   }

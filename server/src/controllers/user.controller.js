@@ -15,6 +15,7 @@ import {
 } from '../utils/validators.js';
 import * as userService from '../services/user.service.js';
 import * as authService from '../services/auth.service.js';
+import { enqueueDelivery } from '../services/delivery.service.js';
 import * as uploadService from '../services/upload.service.js';
 import { countLikesReceived } from '../services/swipe.service.js';
 import { recordView } from '../services/social.service.js';
@@ -31,7 +32,6 @@ import {
 } from '../services/profile.service.js';
 import { getSettings } from '../services/location.service.js';
 import { storage } from '../services/storage.service.js';
-import { env } from '../config/env.js';
 import logger from '../utils/logger.js';
 
 export const getDeck = asyncHandler(async (req, res) => {
@@ -163,16 +163,12 @@ export const report = asyncHandler(async (req, res) => {
 });
 
 export const deleteAccount = asyncHandler(async (req, res) => {
-  const files = await authService.listUserAttachmentPaths(req.user.id);
-  await authService.deleteAccount(req.user.id);
-  for (const f of files) {
-    await storage.remove(f.file_path).catch(() => {});
-    if (f.thumb_path) await storage.remove(f.thumb_path).catch(() => {});
-  }
+  const result = await authService.deleteAccount(req.user.id);
+  if (!result.deleted) throw badRequest('Your account could not be found.');
   res.clearCookie('ec_at', { path: '/' });
   res.clearCookie('ec_rt', { path: '/' });
   res.clearCookie('ec_csrf', { path: '/' });
-  res.json({ ok: true });
+  res.json({ ok: true, mediaCleanupQueued: result.queuedFiles });
 });
 
 /* ------------------------------------------------------------------ *
@@ -213,20 +209,27 @@ export const startVerification = asyncHandler(async (req, res) => {
   const target = kind === 'email' ? req.user.email : phone;
   const { code, expiresInMinutes } = await issueVerification(req.user.id, kind, target);
 
-  // No mail/SMS provider is wired in this build. The code is a bearer
-  // credential, so it is echoed ONLY outside production and never logged --
-  // logging it would defeat that gate for anyone with log access.
-  logger.info('[verify] code issued', { userId: req.user.id, kind });
+  try {
+    await enqueueDelivery(kind === 'email' ? 'email_verification' : 'sms_verification', {
+      to: target,
+      code,
+      kind,
+      expiresInMinutes
+    });
+  } catch (error) {
+    logger.error('verification delivery could not be queued', { userId: req.user.id, kind, code: error.code || 'QUEUE_ERROR' });
+    res.status(503).json({ error: { message: 'Verification delivery is temporarily unavailable. Try again shortly.' } });
+    return;
+  }
 
+  // The code is never returned or logged. It exists only in the encrypted
+  // delivery outbox and is consumed by the configured provider.
+  logger.info('verification code queued', { userId: req.user.id, kind });
   res.json({
     ok: true,
     kind,
     expiresInMinutes,
-    message:
-      kind === 'email'
-        ? 'We sent a 6-digit code to your email address.'
-        : 'We sent a 6-digit code by SMS.',
-    ...(env.isProd ? {} : { devCode: code })
+    message: 'A 6-digit verification code will be sent shortly.'
   });
 });
 

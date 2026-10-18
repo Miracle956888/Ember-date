@@ -17,6 +17,7 @@ import {
   newCsrfToken
 } from '../middleware/auth.js';
 import * as authService from '../services/auth.service.js';
+import { enqueueDelivery } from '../services/delivery.service.js';
 import { logger } from '../utils/logger.js';
 
 const log = logger.child('auth');
@@ -127,32 +128,28 @@ export const refresh = asyncHandler(async (req, res) => {
 // ------------------------------------------------------- password recovery
 
 /**
- * Start a reset. Always answers 200 with the same body: telling a stranger
- * whether an address is registered would be an enumeration oracle.
- *
- * There is no mail transport in this deployment, so the link is logged
- * server-side and, outside production, echoed back to the caller so the flow
- * is testable end to end.
+ * Always returns the same response. Reset bearer data is placed in an
+ * authenticated-encryption outbox and never logged or returned in production.
  */
 export const forgotPassword = asyncHandler(async (req, res) => {
   const { email } = parseOrThrow(forgotPasswordSchema, req.body);
   const created = await authService.createPasswordReset(email);
 
-  const body = { ok: true, message: 'If that email is registered, a reset link is on its way.' };
   if (created) {
-    // The token is a bearer credential: never log it, and never log the link
-    // that contains it. Outside production it is returned in the response so
-    // the flow stays testable end to end; in production it must travel only
-    // by email once a provider is wired.
-    log.info('password reset requested', { userId: Number(created.user.id) });
-    if (!env.isProd) {
-      body.devResetToken = created.token;
-      body.devResetLink = `${env.APP_ORIGIN}/reset-password?token=${created.token}`;
+    try {
+      await enqueueDelivery('password_reset', {
+        to: created.user.email,
+        displayName: created.user.display_name,
+        token: created.token
+      });
+      log.info('password reset queued', { userId: Number(created.user.id) });
+    } catch (error) {
+      // Same public response for existing and unknown addresses. Do not log
+      // recipient, reset link, token, or SMTP response content.
+      log.error('password reset queue failed', { code: error.code || 'QUEUE_ERROR' });
     }
-  } else {
-    log.info('password reset requested for unknown address');
   }
-  res.json(body);
+  res.json({ ok: true, message: 'If that email is registered, a reset link is on its way.' });
 });
 
 /** Finish a reset: consume the single-use token and set the new password. */

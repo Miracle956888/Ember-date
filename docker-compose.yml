@@ -77,6 +77,15 @@ services:
       TURN_URL: ${TURN_URL:-}
       TURN_USERNAME: ${TURN_USERNAME:-}
       TURN_CREDENTIAL: ${TURN_CREDENTIAL:-}
+      SMTP_HOST: ${SMTP_HOST:-}
+      SMTP_PORT: ${SMTP_PORT:-587}
+      SMTP_SECURE: ${SMTP_SECURE:-false}
+      SMTP_USER: ${SMTP_USER:-}
+      SMTP_PASSWORD: ${SMTP_PASSWORD:-}
+      SMTP_FROM: ${SMTP_FROM:-}
+      TWILIO_ACCOUNT_SID: ${TWILIO_ACCOUNT_SID:-}
+      TWILIO_AUTH_TOKEN: ${TWILIO_AUTH_TOKEN:-}
+      TWILIO_FROM_NUMBER: ${TWILIO_FROM_NUMBER:-}
       # Set FORCE_HTTPS=1 once a proxy in front of this serves TLS, so plain
       # http:// visits are upgraded instead of running an insecure session.
       FORCE_HTTPS: ${FORCE_HTTPS:-0}
@@ -100,10 +109,9 @@ services:
       options:
         max-size: '10m'
         max-file: '3'
-    # Apply the schema (idempotent), then serve. Demo data is deliberately NOT
-    # seeded on boot - every demo account shares the password printed in
-    # README.md, so a public host that seeds itself is a host anyone can log
-    # into. Load demo data on purpose with:  docker compose exec app node db/seed.js
+    # Apply pending numbered migrations, then serve. Demo data is deliberately
+    # NOT seeded on boot - it is synthetic, destructive fixture data. Load it
+    # only into a disposable local database after reviewing the seeder guards.
     command: >
       sh -c "node db/migrate.js --if-needed && exec node server/server.js"
 

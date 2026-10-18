@@ -226,13 +226,21 @@ export const verificationStatus = asyncHandler(async (req, res) => {
 });
 
 export const submitVerification = asyncHandler(async (req, res) => {
-  const { gesture } = parseOrThrow(verificationSchema, req.body);
-  // The selfie is stored only long enough to be checked, then removed: it is
-  // evidence, not profile content, and should not outlive the decision.
-  const saved = await uploadService.savePhotoFile(req.user.id, req.file.buffer, req.file.mimetype);
-  const result = await profileService.submitVerification(req.user.id, { gesture, filePath: saved.key });
+  const { challengeId, challengeToken } = parseOrThrow(verificationSchema, req.body);
+  const saved = await uploadService.saveVerificationFile(req.user.id, req.file.buffer, req.file.mimetype);
+  let result;
+  try {
+    result = await profileService.submitVerification(req.user.id, {
+      challengeId,
+      challengeToken,
+      filePath: saved.key
+    });
+  } catch (error) {
+    await storage.remove(saved.key).catch(() => {});
+    throw error;
+  }
 
-  await storage.remove(saved.key).catch(() => {});
-  log.info('verification approved', { userId: req.user.id, gesture });
-  res.status(201).json(result);
+  log.info('photo verification submitted for manual review', { userId: req.user.id });
+  res.setHeader('Cache-Control', 'no-store');
+  res.status(202).json(result);
 });

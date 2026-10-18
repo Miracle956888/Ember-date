@@ -49,11 +49,32 @@ export async function runCleanup({ silent = false } = {}) {
     deletedAttachments: 0,
     deletedConversations: 0,
     deletedTokens: 0,
+    deletedVerificationTokens: 0,
     missingFiles: 0,
     durationMs: 0
   };
 
   try {
+    // Durable outbox for account deletion and reviewed verification evidence.
+    // Missing files are idempotent success; DB rows are removed only after the
+    // storage layer accepts the unlink so transient failures can be retried.
+    const queuedMedia = await query(
+      'SELECT id, file_key FROM media_deletion_queue ORDER BY id LIMIT 200'
+    );
+    for (const item of queuedMedia) {
+      try {
+        const removed = await storage.remove(item.file_key);
+        if (removed) stats.deletedFiles += 1;
+        await execute('DELETE FROM media_deletion_queue WHERE id = ?', [item.id]);
+      } catch (err) {
+        await execute(
+          'UPDATE media_deletion_queue SET attempts = attempts + 1, last_attempt_at = NOW() WHERE id = ?',
+          [item.id]
+        ).catch(() => {});
+        log.warn('queued media unlink will retry', { code: err.code || 'STORAGE_ERROR' });
+      }
+    }
+
     // ---- 1. expired attachments: which messages/conversations are affected?
     const expiredAttachments = await query(
       `SELECT a.id, a.file_path, a.thumb_path, a.message_id, msg.conversation_id
@@ -70,7 +91,7 @@ export async function runCleanup({ silent = false } = {}) {
           if (removed) stats.deletedFiles += 1;
           else stats.missingFiles += 1; // ENOENT - already gone, fine
         } catch (err) {
-          log.warn('failed to unlink file', { key, error: err.message });
+          log.warn('failed to unlink expired attachment', { code: err.code || 'STORAGE_ERROR' });
         }
       }
     }
@@ -92,7 +113,7 @@ export async function runCleanup({ silent = false } = {}) {
         try {
           if (await storage.remove(key)) stats.deletedFiles += 1;
         } catch (err) {
-          log.warn('failed to unlink orphan upload', { key, error: err.message });
+          log.warn('failed to unlink orphan upload', { code: err.code || 'STORAGE_ERROR' });
         }
       }
     }
@@ -124,7 +145,7 @@ export async function runCleanup({ silent = false } = {}) {
           try {
             broadcast(conversationId, messageIds);
           } catch (err) {
-            log.warn('broadcast failed', { conversationId, error: err.message });
+            log.warn('message-expiry broadcast failed', { code: err.code || 'SOCKET_ERROR' });
           }
         }
       }
@@ -174,8 +195,13 @@ export async function runCleanup({ silent = false } = {}) {
     const comments = await postService.purgeExpiredComments({ limit: 5000 });
     stats.deletedComments = comments.comments;
 
-    // ---- 7. housekeeping: dead refresh tokens
+    // ---- 7. housekeeping: expired auth and verification tokens
     stats.deletedTokens = await purgeExpiredRefreshTokens();
+    // Keep issuance history for the complete 15-minute resend window, then
+    // remove expired/used/revoked codes so the token table does not grow forever.
+    stats.deletedVerificationTokens = (await execute(
+      'DELETE FROM verification_tokens WHERE created_at <= DATE_SUB(NOW(), INTERVAL 15 MINUTE) AND expires_at <= NOW()'
+    )).affectedRows;
 
     stats.durationMs = Date.now() - startedAt;
     if (!silent || stats.deletedMessages || stats.deletedFiles || stats.deletedMoments || stats.deletedPosts) {
@@ -191,8 +217,8 @@ export async function runCleanup({ silent = false } = {}) {
     return stats;
   } catch (err) {
     stats.durationMs = Date.now() - startedAt;
-    log.error('run failed - server continues', { error: err.message, durationMs: stats.durationMs });
-    return { ...stats, error: err.message };
+    log.error('run failed - server continues', { code: err.code || 'CLEANUP_ERROR', durationMs: stats.durationMs });
+    return { ...stats, errorCode: err.code || 'CLEANUP_ERROR' };
   } finally {
     running = false;
   }
@@ -207,7 +233,7 @@ export async function purgeFiles(files = []) {
       try {
         if (await storage.remove(key)) deleted += 1;
       } catch (err) {
-        log.warn('purgeFiles failed', { key, error: err.message });
+        log.warn('purgeFiles unlink failed', { code: err.code || 'STORAGE_ERROR' });
       }
     }
   }
@@ -222,13 +248,13 @@ export function startCleanupJob() {
   const expression = cron.validate(env.CLEANUP_CRON) ? env.CLEANUP_CRON : '*/5 * * * *';
 
   task = cron.schedule(expression, () => {
-    runCleanup({ silent: true }).catch((err) => log.error('unhandled cleanup error', { error: err.message }));
+    runCleanup({ silent: true }).catch((err) => log.error('unhandled cleanup error', { code: err.code || 'CLEANUP_ERROR' }));
   });
 
   log.info('scheduled', { cron: expression, ttlHours: env.MESSAGE_TTL_HOURS });
 
   // Run once on boot so a restart immediately reaps anything that lapsed while down.
-  runCleanup({ silent: false }).catch((err) => log.error('boot cleanup failed', { error: err.message }));
+  runCleanup({ silent: false }).catch((err) => log.error('boot cleanup failed', { code: err.code || 'CLEANUP_ERROR' }));
 
   return task;
 }

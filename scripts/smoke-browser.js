@@ -3,12 +3,12 @@
  *
  * Logs in as two demo users in separate browser contexts, walks the deck,
  * matches list and chat thread, sends a live message from one to the other and
- * asserts it lands in under 300ms. Any console error or failed request fails
+ * asserts it lands within a 3-second smoke-test budget. Any console error or failed request fails
  * the run.
  *
  *   node scripts/smoke-browser.js [--base http://localhost:3000] [--shots]
  */
-import { chromium } from 'playwright-core';
+import { chromium } from 'playwright';
 import { mkdir } from 'node:fs/promises';
 import path from 'node:path';
 
@@ -16,8 +16,7 @@ const args = process.argv.slice(2);
 const BASE = args.includes('--base') ? args[args.indexOf('--base') + 1] : 'http://localhost:3000';
 const SHOTS = args.includes('--shots');
 const SHOT_DIR = path.resolve('tmp/shots');
-const EXEC = process.env.CHROMIUM_PATH ||
-  `${process.env.HOME}/.cache/ms-playwright/chromium-1148/chrome-linux/chrome`;
+const EXEC = process.env.CHROMIUM_PATH || null;
 
 const A = { email: 'amara@example.com', password: 'Password123!' };
 const B = { email: 'kelechi@example.com', password: 'Password123!' };
@@ -109,7 +108,7 @@ async function assertNoHorizontalScroll(page, label) {
   check(`${label}: no horizontal scroll`, overflow <= 1, `overflow ${overflow}px`);
 }
 
-const browser = await chromium.launch({ executablePath: EXEC, args: ['--no-sandbox'] });
+const browser = await chromium.launch({ ...(EXEC ? { executablePath: EXEC } : {}), args: ['--no-sandbox'] });
 
 try {
   // Port Harcourt, matching the seeded users so distances are meaningful.
@@ -172,7 +171,7 @@ try {
 
   await pageB.waitForSelector(`text=${body}`, { timeout: 5000 });
   const latency = Date.now() - started;
-  check(`realtime delivery under 300ms (${latency}ms measured incl. typing)`, latency < 3000, `${latency}ms`);
+  check(`realtime delivery under 3 seconds (${latency}ms measured incl. typing)`, latency < 3000, `${latency}ms`);
 
   check('sender sees their own bubble', (await pageA.locator(`.bubble-out:has-text("${body}")`).count()) === 1);
   check('receiver sees an incoming bubble', (await pageB.locator(`.bubble-in:has-text("${body}")`).count()) === 1);

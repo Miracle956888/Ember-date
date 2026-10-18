@@ -49,12 +49,11 @@ services:
       name: ember-uploads
       mountPath: /app/uploads
       sizeGB: 1
-    # No preDeployCommand on purpose. Two reasons: it needs a paid instance type,
-    # and `node db/migrate.js` is destructive - schema.sql DROPs and recreates all
-    # 42 tables, so running it before every deploy would wipe the database on
-    # every push. The image's own start command runs `node db/migrate.js
-    # --if-needed`, which provisions an empty database on first boot and no-ops
-    # after that, so the schema is applied exactly once.
+    # No separate migration command: the image applies pending ordered,
+    # checksummed migrations before the app starts. The runner uses a DB advisory
+    # lock, validates legacy-baseline adoption, and never replays the baseline
+    # over existing rows. Migrations still need a backup and staging rehearsal;
+    # this boot ordering does not promise zero-downtime or automatic rollback.
     envVars:
       - key: NODE_ENV
         value: production
@@ -104,6 +103,26 @@ services:
       - key: TURN_USERNAME
         sync: false
       - key: TURN_CREDENTIAL
+        sync: false
+      # Optional providers; keep credentials in Render's secret environment,
+      # never in render.yaml. Empty values leave delivery visibly unconfigured.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
         sync: false
       - key: FORCE_HTTPS
         value: "1"

@@ -12,7 +12,7 @@
  * are invisible until something is actually deployed and poked.
  *
  * Every local asset referenced by every page is fetched too, so a broken path in
- * any one of the 15 pages fails the run rather than surfacing as a missing icon.
+ * any one of the 17 pages fails the run rather than surfacing as a missing icon.
  *
  *   --base <url>   target, default http://localhost:3000
  *   --auth         also exercise login, the auth wall, CSRF and the 404 contract
@@ -39,7 +39,7 @@ const DEMO_EMAIL = process.env.SWEEP_EMAIL || 'amara@example.com';
 const DEMO_PASSWORD = process.env.SWEEP_PASSWORD || 'Password123!';
 
 const PAGES = [
-  'index', 'login', 'register', 'app', 'matches', 'chats', 'chat', 'call',
+  'index', 'login', 'register', 'forgot-password', 'reset-password', 'app', 'matches', 'chats', 'chat', 'call',
   'profile', 'nearby', 'likes', 'settings', 'u', 'moments', 'admin'
 ];
 const API_PREFIXES = [
@@ -148,7 +148,7 @@ for (const page of PAGES) {
   }
 }
 const list = [...refs].sort();
-check(list.length > 5, `${list.length} distinct local assets referenced across the 15 pages`);
+check(list.length > 5, `${list.length} distinct local assets referenced across the 17 pages`);
 let broken = 0;
 const brokenList = [];
 for (const url of list) {

@@ -133,6 +133,22 @@ export const env = Object.freeze({
   UPLOAD_DIR: path.isAbsolute(uploadDirRaw) ? uploadDirRaw : path.resolve(ROOT_DIR, uploadDirRaw),
   PUBLIC_DIR: path.resolve(ROOT_DIR, 'public'),
 
+  SMTP: Object.freeze({
+    host: (process.env.SMTP_HOST || '').trim(),
+    port: int('SMTP_PORT', 587),
+    secure: process.env.SMTP_SECURE === '1' || process.env.SMTP_SECURE === 'true',
+    user: process.env.SMTP_USER || '',
+    password: process.env.SMTP_PASSWORD || '',
+    from: (process.env.SMTP_FROM || '').trim(),
+    configured: Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM)
+  }),
+  TWILIO: Object.freeze({
+    accountSid: process.env.TWILIO_ACCOUNT_SID || '',
+    authToken: process.env.TWILIO_AUTH_TOKEN || '',
+    fromNumber: process.env.TWILIO_FROM_NUMBER || '',
+    configured: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER)
+  }),
+
   TURN: Object.freeze({
     url: process.env.TURN_URL || '',
     username: process.env.TURN_USERNAME || '',

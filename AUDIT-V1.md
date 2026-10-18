@@ -1,8 +1,14 @@
-# V1 Upgrade Audit — Ember
+# Historical V1 Upgrade Audit — Ember
 
-**Codebase:** 13,372 LOC · 23 tables · 7 API routers · 12 pages · 22 client modules
+> **Historical snapshot, not a current audit or release verdict.** This file records
+> an earlier phase of work. Its table/page counts, missing-feature inventory,
+> test results, and ignored `tmp/` suites are stale and must not be used as current
+> evidence. The current source of truth is `README.md`, `DEPLOY.md`, and
+> `TESTING.md`. No staging or production readiness is established here.
+
+**Historical codebase snapshot:** 13,372 LOC · 23 tables · 7 API routers · 12 pages · 22 client modules
 **Philosophy target:** *Connect in the moment. Share freely. Stay private.*
-**Verdict:** the app is a solid, secure **dating** app. It is roughly **40% of the V1 spec**. The dating half is largely done and good; the **social half (moments, posts, comments, notifications) and the entire trust-and-safety back office (admin, moderation, audit) do not exist**. No rebuild is warranted — every missing feature is additive.
+**Historical verdict:** superseded; the current project contains additional migrations, account recovery, verification delivery, and an admin console, but remains unverified against a live database, providers, staging, and production.
 
 ---
 
@@ -243,7 +249,7 @@ Ordered by the spec's priority (security → privacy → … → polish). Each s
     - `[done]` Runner extended to **16 suites, green twice consecutively** (~250 s each); lint clean; `sessions_valid_from` rebuilds from `db/schema.sql`.
     - `[done]` **Final sweep (after items 17-22 landed).** Re-audited the spec's flow list against the suites rather than trusting the earlier pass: verify email/phone, custom TTL timers, polls + voting, username duplicate/case/cooldown/`USERNAME_TAKEN`, suspend/ban/restore and audit logs are all genuinely asserted. (An initial keyword grep suggested five gaps; all five were false alarms from case/pattern artifacts, confirmed by reading the call sites.)
     - `[done]` **Schema drift check.** Built a throwaway DB from `db/schema.sql` alone and diffed every column of all **42 tables** against the live DB: **zero drift**, so the `timezone`/`locale` columns added by hand in item 22 really are reproducible from source. Then did a full **cold rebuild** (`migrate --fresh` + `seed`) and reran everything green — the closest thing to a real deploy. The cleanup job reaping exactly 1 message on boot is correct: the seed deliberately plants one already-expired message to prove TTL enforcement.
-    - `[done]` **Security spot-check** against the live server: login and `forgot-password` are non-enumerable (byte-identical responses for known vs unknown accounts); `devResetToken`/`devCode` are gated behind `!env.isProd`; uploads are **not** reachable as static files (404 on `/uploads/...`) and only via authorising routes (401 without a session); photo filenames are UUIDv4, so private media is not URL-guessable; CSP has no `unsafe-inline` for scripts; no `Access-Control-Allow-Origin` reflected to a forged origin; no `X-Powered-By`; `requireRole` returns **404** to authenticated non-staff.
+    - `[historical]` Earlier development builds exposed reset links/codes in non-production API responses. That behavior has since been removed: the current API does not return verification codes or reset tokens in any environment. The other live-server assertions in this historical note were not rerun as part of the current work.
     - `[done]` **Two real bugs found by the sweep, both on `/profile`** — the one page the earlier nav work missed. (1) It was the **only page of 9 with no `<main>` landmark**, so the "Skip to content" link pointed at a plain `div` and screen-reader users lost main-region navigation there. (2) It still carried a **stale 3-tab nav** using the pre-item-21 `data-tab` attribute, with a heart for Discover and a *speech-bubble* icon labelled "Matches". Both fixed; the in-page `.seg-tab` controls on `/likes` and `/nearby` legitimately keep `data-tab` and were left alone.
     - `[done]` `tmp/p10-sweep.mjs` — **98 assertions**: all 8 primary pages x 5 viewports (iPhone SE 375, iPhone 14 390, Android 360, iPad 820, desktop 1280) asserting content renders, no horizontal overflow, 5 tabs with >=44px tap targets inside the viewport on mobile, sidebar on desktop, and zero console/page errors. Registered in the runner: **25 suites**.
 
@@ -262,8 +268,9 @@ bug in item 23 — the guard existed, a second path ignored it.
   secret-named keys (`code`, `token`, `link`, `password`, `otp`, `authorization`,
   `cookie`, …) at any depth and strips `?token=`/`?code=` from any URL-looking
   string, so a careless future log line cannot leak either.
-- Outside production the reset flow now also returns `devResetLink`, so losing
-  the logged link costs nothing in development.
+- Historical note: a prior development build returned `devResetLink`. The
+  current implementation no longer returns bearer reset data from the API;
+  delivery requires the encrypted outbox and configured email provider.
 - `tmp/p10-secretlog.mjs` (**23 assertions**) covers the redactor as a unit, the
   live server's real log stream for both flows, and a static check that the call
   sites stay clean — the last one matters because the runtime check is

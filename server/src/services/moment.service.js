@@ -417,7 +417,7 @@ export async function deleteMoment(momentId, userId, { asModerator = false } = {
     } catch (err) {
       // The row is already unreachable; a missing file is not an error worth
       // failing the request over. The sweep will retry.
-      log.warn('media unlink failed', { key, error: err.message });
+      log.warn('media unlink failed', { code: err.code || 'STORAGE_ERROR' });
     }
   }
 

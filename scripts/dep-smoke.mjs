@@ -518,46 +518,73 @@ const loopback = runCheck({ FORCE_HTTPS: '1', TRUST_PROXY: '0', NODE_ENV: 'devel
 check(loopback.status === 1 && /loop every request forever/.test(loopback.out), 'deploy-check catches the redirect loop even in dev');
 
 // --------------------------------------------------------------------------
-section('11. Migration guard: a restart must never destroy data');
+section('11. Ordered, checksummed migrations: safe adoption and restart behavior');
 
-// db/schema.sql is a snapshot, not a delta: it DROPs and recreates all 42 tables.
-// Both the image start command and docker-compose call `node db/migrate.js
-// --if-needed` at every container start, so the no-op path is load-bearing for
-// data survival, not just a nicety. Assert the shape of the schema file, then
-// the decision table the boot path runs on, then the wiring in each deploy file.
-const { decideMigration } = await import('../db/migrate.js');
-check(true, 'db/migrate.js imports without touching the database (testable guard)');
+const { adaptForMariaDb, baselineTableColumns, decideMigration, loadMigrations, splitStatements } =
+  await import('../db/migrate.js');
+check(true, 'db/migrate.js imports without connecting to or modifying a database');
 
-const schemaSql = fs.readFileSync(path.join(ROOT, 'db', 'schema.sql'), 'utf8');
-const drops = (schemaSql.match(/^DROP TABLE IF EXISTS/gm) || []).length;
-const bareCreates = (schemaSql.match(/^CREATE TABLE /gm) || []).length;
-const guardedCreates = (schemaSql.match(/^CREATE TABLE IF NOT EXISTS/gm) || []).length;
-check(bareCreates === 42 && guardedCreates === 0, `the snapshot creates all 42 tables unconditionally (${bareCreates} bare, ${guardedCreates} guarded)`);
-check(drops === 23, `23 of those tables are dropped first (${drops}) - a partial wipe, which is why re-running is never safe`);
-check(drops < bareCreates, 'the drop list is incomplete, so a second run aborts partway rather than rebuilding cleanly');
+const migrations = await loadMigrations(path.join(ROOT, 'db', 'migrations'));
+check(migrations.length >= 2, `versioned migrations are discovered (${migrations.length} files)`);
+check(migrations[0]?.filename === '0001_baseline.sql', 'the initial schema is a numbered baseline migration');
+check(migrations.every((m) => /^[0-9]{4}$/.test(m.version) && /^[a-f0-9]{64}$/.test(m.checksum)), 'migration versions and SHA-256 checksums are stable-shaped');
+const baselineSql = fs.readFileSync(path.join(ROOT, 'db', 'migrations', '0001_baseline.sql'), 'utf8');
+const snapshotSql = fs.readFileSync(path.join(ROOT, 'db', 'schema.sql'), 'utf8');
+const baselineShape = baselineTableColumns(baselineSql);
+check(baselineShape.size === 42, `baseline contains all 42 expected business tables (found ${baselineShape.size})`);
+check([...baselineShape.values()].reduce((n, columns) => n + columns.length, 0) === 330, 'baseline parser accounts for 330 column definitions');
+check(snapshotSql === baselineSql, 'db/schema.sql documents the same initial baseline instead of a separate destructive snapshot');
+check(splitStatements(baselineSql).length === 43, 'SQL statement splitting handles the SET statement and all 42 table definitions');
+check(adaptForMariaDb('CREATE TABLE x (id INT) COLLATE=utf8mb4_0900_ai_ci').includes('utf8mb4_general_ci'), 'MariaDB collation compatibility remains explicit');
+
+const migrationFiles = migrations.map((m) => m.sql).join('\n');
+check(!/\b(?:DROP\s+(?:DATABASE|TABLE)|TRUNCATE\s+TABLE)\b/i.test(migrationFiles), 'normal versioned migrations contain no database/table drop or truncate');
+check(/UPDATE verifications[\s\S]*?WHERE status <> 'pending'[\s\S]*?SET file_path = NULL/i.test(migrations.find((migration) => migration.version === '0002')?.sql || ''), 'reviewed verification file references are cleared after queueing deletion');
+check(/ADD COLUMN revoked_at DATETIME NULL/.test(migrations.find((migration) => migration.version === '0003')?.sql || ''), 'verification issuance history is retained through an additive revocation marker');
+const migrateSrc = fs.readFileSync(path.join(ROOT, 'db', 'migrate.js'), 'utf8');
+check(
+  /if \(FRESH\) await assertDestructiveResetAllowed\(database\)/.test(migrateSrc) &&
+    /if \(FRESH\)\s+\{[\s\S]*?DROP\s+DATABASE\s+IF\s+EXISTS[\s\S]*?\n\s+\}/.test(migrateSrc),
+  'DROP DATABASE is reachable only after the explicit --fresh guard'
+);
 
 const d0 = decideMigration({});
-check(d0.action === 'apply' && !d0.destructive, 'empty database: first boot provisions the schema');
-const d1 = decideMigration({ existingTables: 42 });
-check(d1.action === 'refuse', 'schema present + no flags: refuses instead of wiping');
-const d2 = decideMigration({ existingTables: 42, ifNeeded: true });
-check(d2.action === 'skip', '--if-needed against an existing schema: no-op, which is what restarts run');
-const d3 = decideMigration({ existingTables: 0, ifNeeded: true });
-check(d3.action === 'apply' && !d3.destructive, '--if-needed against an empty database still provisions it');
-const d4 = decideMigration({ existingTables: 42, fresh: true });
-check(d4.action === 'apply', '--fresh is the only way through, and it recreates from the snapshot');
-const d5 = decideMigration({ existingTables: 1 });
-check(d5.action === 'refuse', 'a half-migrated database (1 table) is refused too, not papered over');
-const migrateSrc = fs.readFileSync(path.join(ROOT, 'db', 'migrate.js'), 'utf8');
-check(!migrateSrc.includes("'--force'"), 'there is no --force flag to reach for by accident');
+check(d0.action === 'apply', 'empty database applies the ordered baseline');
+const d1 = decideMigration({ existingTables: 42, legacyBaselineValid: true });
+check(d1.action === 'adopt', 'a validated complete legacy schema is adopted without replaying baseline DDL');
+const d2 = decideMigration({ existingTables: 42, legacyBaselineValid: true, hasHistory: true, pendingCount: 0 });
+check(d2.action === 'skip', 'complete migration history with no pending version is a no-op');
+const d3 = decideMigration({ existingTables: 42, legacyBaselineValid: true, hasHistory: true, pendingCount: 1 });
+check(d3.action === 'apply', 'known migration history applies only pending numbered versions');
+const d4 = decideMigration({ existingTables: 1, legacyBaselineValid: false });
+check(d4.action === 'refuse', 'partial or unrecognized schemas are refused rather than overwritten');
+check(migrateSrc.includes('--target=') && migrateSrc.includes('Checksum mismatch'), 'operators can target a version and checksum drift is refused');
+check(migrateSrc.includes('GET_LOCK') && migrateSrc.includes('Migration history has a gap'), 'migrations serialize concurrent runners and refuse non-contiguous history');
+check(migrateSrc.indexOf('GET_LOCK') < migrateSrc.indexOf('DROP DATABASE IF EXISTS'), 'migration lock is acquired before even the guarded destructive reset path');
+
+const freshGuardProd = spawnSync(process.execPath, [path.join(ROOT, 'db', 'migrate.js'), '--fresh'], {
+  cwd: ROOT, encoding: 'utf8', timeout: 10000,
+  env: {
+    ...process.env, NODE_ENV: 'production', DB_HOST: 'db', DB_PORT: '3306', DB_USER: 'smoke',
+    DB_PASSWORD: 'smoke-only', DB_NAME: 'smoke_never_connects', APP_ORIGIN: 'https://example.invalid',
+    JWT_ACCESS_SECRET: 'a'.repeat(48), JWT_REFRESH_SECRET: 'b'.repeat(48),
+    ALLOW_DESTRUCTIVE_RESET: '1', CONFIRM_DROP_DATABASE: 'smoke_never_connects'
+  }
+});
+check(freshGuardProd.status === 1 && /disabled in production/.test(`${freshGuardProd.stdout}${freshGuardProd.stderr}`), '--fresh refuses in production before opening a database connection');
+const freshGuardUnconfirmed = spawnSync(process.execPath, [path.join(ROOT, 'db', 'migrate.js'), '--fresh'], {
+  cwd: ROOT, encoding: 'utf8', timeout: 10000,
+  env: { ...process.env, NODE_ENV: 'development', ALLOW_DESTRUCTIVE_RESET: '', CONFIRM_DROP_DATABASE: '' }
+});
+check(freshGuardUnconfirmed.status === 1 && /--fresh refused/.test(`${freshGuardUnconfirmed.stdout}${freshGuardUnconfirmed.stderr}`), '--fresh requires both explicit development reset guards');
 
 const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8');
-check(/CMD \["sh", "-c", "node db\/migrate\.js --if-needed && exec node server\/server\.js"\]/.test(dockerfile), 'Dockerfile CMD migrates only if needed, then execs the server');
+check(/CMD \["sh", "-c", "node db\/migrate\.js --if-needed && exec node server\/server\.js"\]/.test(dockerfile), 'Dockerfile applies pending migrations before starting the server');
+check(/COPY scripts\/bootstrap-admin\.mjs scripts\/deploy-check\.mjs \.\/scripts\//.test(dockerfile), 'production image includes the guarded admin bootstrap and live deploy-check tools');
 const composeRaw = fs.readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8');
-check(composeRaw.includes('node db/migrate.js --if-needed && exec node server/server.js'), 'compose start command matches the image (skip-if-present, exec for clean shutdown)');
+check(composeRaw.includes('node db/migrate.js --if-needed && exec node server/server.js'), 'compose start command matches the image');
 const renderYml = fs.readFileSync(path.join(ROOT, 'render.yaml'), 'utf8');
-check(!/preDeployCommand:\s*node db\/migrate\.js\s*$/m.test(renderYml), 'render.yaml has no bare preDeployCommand that would wipe data on every deploy');
-check(/not re-runnable/.test(migrateSrc) && /--if-needed/.test(migrateSrc), 'the refusal message names the reason and both ways out');
+check(!/preDeployCommand:\s*node db\/migrate\.js\s*$/m.test(renderYml), 'Render does not separately run a migration command that could race the boot process');
 
 // --------------------------------------------------------------------------
 section('12. CI workflow files are valid for the Actions schema, not just YAML');
@@ -615,7 +642,7 @@ for (const { f, doc } of workflows) {
   check(jwt.length === 2, 'both JWT secrets are generated by Render (generateValue: true), not pasted into the repo');
   // Comments explain the choices; only the live YAML can break a deploy.
   const live = raw.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
-  check(!/preDeployCommand/.test(live), 'no preDeployCommand key: it needs a paid plan and the schema file is not re-runnable');
+  check(!/preDeployCommand/.test(live), 'no separate preDeployCommand competes with the image migration runner');
   check(!/(password|secret|token|credential)\s*:\s*['"]?[A-Za-z0-9+/_-]{8,}/i.test(live), 'render.yaml contains nothing that looks like a live secret');
   check(fs.existsSync(path.join(ROOT, svc.dockerfilePath.replace(/^\.\//, ''))), `the blueprint's ${svc.dockerfilePath} exists in the repo`);
 }
@@ -647,8 +674,20 @@ if (ci) {
   const boot = (verify?.steps || []).find((st) => String(st.name).startsWith('Boot with seeded data'));
   check(/route-sweep\.mjs/.test(String(boot?.run)), 'deploy-verify runs the route sweep against the live server');
   check(/smoke-socket\.js/.test(String(boot?.run)), 'deploy-verify runs the Socket.IO suite against the live server');
-  const guard = (verify?.steps || []).find((st) => String(st.name).includes('restart must not destroy data'));
-  check(/--if-needed/.test(String(guard?.run)) && /survive-restart/.test(String(guard?.run)), 'the boot-time migration is proven non-destructive on real data');
+  check(/smoke-browser\.js/.test(String(boot?.run)), 'deploy-verify runs the browser suite against the live server');
+  const browserInstall = (verify?.steps || []).find((st) => String(st.name).startsWith('Install Chromium'));
+  check(/playwright install --with-deps chromium/.test(String(browserInstall?.run)), 'CI installs a managed Chromium build for reproducible browser tests');
+  const baseline = (verify?.steps || []).find((st) => String(st.name).startsWith('Apply only the baseline'));
+  check(/--target=0001/.test(String(baseline?.run)), 'deploy-verify starts with only the baseline so MySQL 8 exercises pending DDL');
+  const migration = (verify?.steps || []).find((st) => String(st.name).startsWith('Apply additive migration'));
+  const migrationRun = String(migration?.run || '');
+  check(/0002_admin_security/.test(migrationRun) && /migration-sentinel/.test(migrationRun), 'MySQL integration applies a pending migration while preserving a synthetic row');
+  check(/--if-needed/.test(migrationRun) && /Checksum mismatch/.test(migrationRun) && !/--fresh/.test(migrationRun), 'restart no-op and checksum refusal are tested without a destructive reset');
+  const securityTests = (ci.jobs?.checks?.steps || []).find((st) => String(st.name).startsWith('Security unit suite'));
+  check(/npm run test:security/.test(String(securityTests?.run)), 'CI executes the non-empty security unit suite');
+  const securityIntegration = fs.readFileSync(path.join(ROOT, 'scripts', 'security-integration.mjs'), 'utf8');
+  check(/ALLOW_SYNTHETIC_SECURITY_TESTS=1[\s\S]*security-integration\.mjs/.test(String(boot?.run)), 'CI invokes the synthetic MySQL/API security integration suite');
+  check(/process\.env\.CI === 'true'/.test(securityIntegration) && /process\.env\.DB_NAME === 'ember_ci'/.test(securityIntegration) && (securityIntegration.match(/\['127\.0\.0\.1', 'localhost'\]/g) || []).length >= 2, 'the mutating integration suite refuses non-local, non-CI, non-disposable databases');
   const prod = (verify?.steps || []).find((st) => String(st.name).includes('production mode'));
   check(/FORCE_HTTPS=1/.test(String(prod?.run)) && /301/.test(String(prod?.run)) && /Secure/.test(String(prod?.run)), 'deploy-verify boots in production and checks HTTPS upgrade + Secure cookies');
 }
