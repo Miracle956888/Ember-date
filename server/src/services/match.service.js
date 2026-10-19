@@ -1,4 +1,5 @@
-import { query, queryOne, execute } from '../db/pool.js';
+import { query, queryOne, withTransaction } from '../db/pool.js';
+import { MEDIA_DELETE_REASON, enqueueMediaDeletion, removeQueuedMedia } from './media-deletion.service.js';
 import { notFound, forbidden } from '../utils/errors.js';
 import { calcAge } from './auth.service.js';
 
@@ -132,31 +133,37 @@ export async function getConversationIdForMatch(matchId, userId) {
   return Number(row.id);
 }
 
-/**
- * Unmatch. Returns the file paths that must be unlinked from disk, because the
- * DB cascade removes the attachment rows but not the bytes.
- */
+/** Unmatch and transactionally queue every attachment before FK cascades remove its DB row. */
 export async function unmatch(matchId, userId) {
-  const match = await queryOne(
-    'SELECT id, user_a_id, user_b_id FROM matches WHERE id = ? AND (user_a_id = ? OR user_b_id = ?) LIMIT 1',
-    [matchId, userId, userId]
-  );
-  if (!match) throw notFound('Match not found.');
+  const result = await withTransaction(async (conn) => {
+    const [matches] = await conn.execute(
+      'SELECT id, user_a_id, user_b_id FROM matches WHERE id = ? AND (user_a_id = ? OR user_b_id = ?) LIMIT 1 FOR UPDATE',
+      [matchId, userId, userId]
+    );
+    const match = matches[0];
+    if (!match) throw notFound('Match not found.');
 
-  const files = await query(
-    `SELECT a.file_path, a.thumb_path
-       FROM attachments a
-       JOIN messages msg ON msg.id = a.message_id
-       JOIN conversations c ON c.id = msg.conversation_id
-      WHERE c.match_id = ?`,
-    [matchId]
-  );
+    const [files] = await conn.execute(
+      `SELECT a.file_path, a.thumb_path
+         FROM attachments a
+         JOIN messages msg ON msg.id = a.message_id
+         JOIN conversations c ON c.id = msg.conversation_id
+        WHERE c.match_id = ? FOR UPDATE`,
+      [matchId]
+    );
+    const keys = files.flatMap((file) => [file.file_path, file.thumb_path].filter(Boolean));
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+    await conn.execute('DELETE FROM matches WHERE id = ?', [matchId]);
+    return { match, keys };
+  });
 
-  await execute('DELETE FROM matches WHERE id = ?', [matchId]);
-
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
   return {
     matchId: Number(matchId),
-    otherUserId: Number(match.user_a_id) === userId ? Number(match.user_b_id) : Number(match.user_a_id),
-    files: files.map((f) => ({ filePath: f.file_path, thumbPath: f.thumb_path }))
+    otherUserId: Number(result.match.user_a_id) === Number(userId)
+      ? Number(result.match.user_b_id)
+      : Number(result.match.user_a_id),
+    deletedFiles: removed.deletedFiles,
+    pendingFiles: removed.failedFiles
   };
 }

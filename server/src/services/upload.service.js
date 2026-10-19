@@ -6,10 +6,17 @@ import fsp from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import crypto from 'node:crypto';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { fileTypeFromBuffer } from 'file-type';
 import sharp from 'sharp';
-import ffmpeg from 'fluent-ffmpeg';
-import { query, queryOne, execute } from '../db/pool.js';
+import { queryOne, execute, withTransaction } from '../db/pool.js';
+import {
+  MEDIA_DELETE_REASON,
+  discardUnownedMedia,
+  enqueueMediaDeletion,
+  removeQueuedMedia
+} from './media-deletion.service.js';
 import { storage } from './storage.service.js';
 import { env } from '../config/env.js';
 import { badRequest, notFound, forbidden, tooLarge, unsupported } from '../utils/errors.js';
@@ -23,6 +30,28 @@ import {
 import { logger } from '../utils/logger.js';
 
 const log = logger.child('upload');
+const execFileAsync = promisify(execFile);
+
+/** Queue cleanup first; if the DB itself is unavailable, make one redacted best-effort unlink. */
+async function cleanupUnownedKeys(values) {
+  const keys = [...new Set((Array.isArray(values) ? values : [values]).filter(Boolean).map(String))];
+  if (!keys.length) return { deletedFiles: 0, missingFiles: 0, failedFiles: 0 };
+  try {
+    return await discardUnownedMedia(keys, MEDIA_DELETE_REASON.orphanedUpload);
+  } catch (error) {
+    const results = await Promise.all(keys.map((key) => storage.remove(key).catch(() => null)));
+    log.warn('unowned media cleanup could not be made durable', { code: error.code || 'QUEUE_ERROR' });
+    return {
+      deletedFiles: results.filter((removed) => removed === true).length,
+      missingFiles: results.filter((removed) => removed === false).length,
+      failedFiles: results.filter((removed) => removed === null).length
+    };
+  }
+}
+
+export async function cleanupUnownedFiles(values) {
+  return cleanupUnownedKeys(values);
+}
 const THUMB_WIDTH = 400;
 
 let ffmpegAvailable = null;
@@ -30,14 +59,17 @@ let ffmpegAvailable = null;
 /** Probe once whether ffmpeg exists; degrade gracefully when it does not. */
 export function checkFfmpeg() {
   if (ffmpegAvailable !== null) return Promise.resolve(ffmpegAvailable);
-  return new Promise((resolve) => {
-    ffmpeg.getAvailableFormats((err) => {
-      ffmpegAvailable = !err;
-      if (err) log.warn('ffmpeg not available - videos will use a generic poster');
-      else log.info('ffmpeg available - video posters enabled');
-      resolve(ffmpegAvailable);
+  return execFileAsync('ffmpeg', ['-version'], { timeout: 5000, maxBuffer: 64 * 1024 })
+    .then(() => {
+      ffmpegAvailable = true;
+      log.info('ffmpeg available - video posters enabled');
+      return true;
+    })
+    .catch(() => {
+      ffmpegAvailable = false;
+      log.warn('ffmpeg not available - videos will use a generic poster');
+      return false;
     });
-  });
 }
 
 /** Generic branded poster used when ffmpeg is missing or fails. */
@@ -63,31 +95,33 @@ async function extractPoster(absVideoPath) {
   const outFile = path.join(tmpDir, 'poster.png');
 
   try {
-    const durationSecs = await new Promise((resolve) => {
-      ffmpeg.ffprobe(absVideoPath, (err, data) => {
-        if (err) return resolve(null);
-        const d = data?.format?.duration;
-        return resolve(d ? Math.round(Number(d)) : null);
-      });
-    });
+    let durationSecs = null;
+    try {
+      const { stdout } = await execFileAsync(
+        'ffprobe',
+        ['-v', 'error', '-show_entries', 'format=duration', '-of', 'json', absVideoPath],
+        { timeout: 10_000, maxBuffer: 256 * 1024 }
+      );
+      const duration = Number(JSON.parse(stdout)?.format?.duration);
+      if (Number.isFinite(duration) && duration > 0) durationSecs = Math.round(duration);
+    } catch {
+      // Poster extraction can still work if duration probing fails.
+    }
 
-    await new Promise((resolve, reject) => {
-      ffmpeg(absVideoPath)
-        .on('error', reject)
-        .on('end', resolve)
-        .screenshots({
-          timestamps: ['00:00:01.000'],
-          filename: 'poster.png',
-          folder: tmpDir,
-          size: '640x?'
-        });
-    });
+    await execFileAsync(
+      'ffmpeg',
+      [
+        '-hide_banner', '-loglevel', 'error', '-ss', '1', '-i', absVideoPath,
+        '-frames:v', '1', '-vf', 'scale=640:-2', '-an', '-y', outFile
+      ],
+      { timeout: 30_000, maxBuffer: 1024 * 1024 }
+    );
 
     const raw = await fsp.readFile(outFile);
     const buffer = await sharp(raw).resize({ width: THUMB_WIDTH, withoutEnlargement: true }).webp({ quality: 78 }).toBuffer();
     return { buffer, generic: false, durationSecs };
   } catch (err) {
-    log.warn('poster extraction failed, using generic', { error: err.message });
+    log.warn('poster extraction failed, using generic', { code: err.code || 'FFMPEG_ERROR' });
     return { buffer: await genericPoster(), generic: true, durationSecs: null };
   } finally {
     await fsp.rm(tmpDir, { recursive: true, force: true }).catch(() => {});
@@ -113,8 +147,8 @@ export async function processUpload({ buffer, declaredMime, purpose = 'message' 
   if (!isImage && !isVideo) {
     throw unsupported('That file type is not supported. Use JPG, PNG, WebP, GIF, MP4, WebM or MOV.');
   }
-  if (purpose === 'photo' && !isImage) {
-    throw unsupported('Profile photos must be an image.');
+  if ((purpose === 'photo' || purpose === 'verification') && !isImage) {
+    throw unsupported(purpose === 'verification' ? 'Verification evidence must be an image.' : 'Profile photos must be an image.');
   }
   if (declaredMime && declaredMime !== mime && !(declaredMime === 'video/quicktime' && mime === 'video/mp4')) {
     log.debug('declared mime differs from detected', { declaredMime, mime });
@@ -138,87 +172,104 @@ export async function processUpload({ buffer, declaredMime, purpose = 'message' 
   let outMime = mime;
   let sizeBytes = buffer.length;
 
-  if (isImage) {
-    const isAnimated = mime === 'image/gif';
-    const pipeline = sharp(buffer, { animated: isAnimated, failOn: 'none' });
-    const meta = await pipeline.metadata();
-    width = meta.width ?? null;
-    height = meta.height ?? null;
+  try {
+    if (isImage) {
+      const isAnimated = mime === 'image/gif';
+      const pipeline = sharp(buffer, { animated: isAnimated, failOn: 'none' });
+      const meta = await pipeline.metadata();
+      width = meta.width ?? null;
+      height = meta.height ?? null;
 
-    if (isAnimated) {
-      // Keep animation: re-encode to animated webp, which also drops metadata.
-      const out = await sharp(buffer, { animated: true, failOn: 'none' })
-        .resize({ width: 1600, withoutEnlargement: true })
-        .webp({ quality: 80, effort: 4 })
-        .toBuffer();
-      outMime = 'image/webp';
-      sizeBytes = out.length;
-      fileKey = storage.newKey('webp', purpose === 'photo' ? 'photos' : '');
-      await storage.save(fileKey, out);
+      if (isAnimated) {
+        // Keep animation: re-encode to animated webp, which also drops metadata.
+        const out = await sharp(buffer, { animated: true, failOn: 'none' })
+          .resize({ width: 1600, withoutEnlargement: true })
+          .webp({ quality: 80, effort: 4 })
+          .toBuffer();
+        outMime = 'image/webp';
+        sizeBytes = out.length;
+        const directory = purpose === 'photo' ? 'photos' : purpose === 'verification' ? 'verification' : '';
+        fileKey = storage.newKey('webp', directory);
+        await storage.save(fileKey, out);
 
-      const thumb = await sharp(buffer, { animated: false, failOn: 'none' })
-        .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
-        .webp({ quality: 78 })
-        .toBuffer();
-      thumbKey = storage.newKey('webp', 'thumbs');
-      await storage.save(thumbKey, thumb);
+        if (purpose !== 'verification') {
+          const thumb = await sharp(buffer, { animated: false, failOn: 'none' })
+            .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
+            .webp({ quality: 78 })
+            .toBuffer();
+          thumbKey = storage.newKey('webp', 'thumbs');
+          await storage.save(thumbKey, thumb);
+        }
+      } else {
+        // rotate() applies EXIF orientation then the re-encode strips all metadata.
+        const out = await sharp(buffer, { failOn: 'none' })
+          .rotate()
+          .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
+          .jpeg({ quality: 84, mozjpeg: true })
+          .toBuffer();
+        const outMeta = await sharp(out).metadata();
+        width = outMeta.width ?? width;
+        height = outMeta.height ?? height;
+        outMime = 'image/jpeg';
+        sizeBytes = out.length;
+        const directory = purpose === 'photo' ? 'photos' : purpose === 'verification' ? 'verification' : '';
+        fileKey = storage.newKey('jpg', directory);
+        await storage.save(fileKey, out);
+
+        if (purpose !== 'verification') {
+          const thumb = await sharp(out)
+            .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
+            .webp({ quality: 78 })
+            .toBuffer();
+          thumbKey = storage.newKey('webp', 'thumbs');
+          await storage.save(thumbKey, thumb);
+        }
+      }
     } else {
-      // rotate() applies EXIF orientation then the re-encode strips all metadata.
-      const out = await sharp(buffer, { failOn: 'none' })
-        .rotate()
-        .resize({ width: 1600, height: 1600, fit: 'inside', withoutEnlargement: true })
-        .jpeg({ quality: 84, mozjpeg: true })
-        .toBuffer();
-      const outMeta = await sharp(out).metadata();
-      width = outMeta.width ?? width;
-      height = outMeta.height ?? height;
-      outMime = 'image/jpeg';
-      sizeBytes = out.length;
-      fileKey = storage.newKey('jpg', purpose === 'photo' ? 'photos' : '');
-      await storage.save(fileKey, out);
+      // Video: store as-is (re-encoding 50 MB inline would block), generate poster.
+      const ext = EXT_BY_MIME[mime] || 'mp4';
+      fileKey = storage.newKey(ext, 'videos');
+      await storage.save(fileKey, buffer);
 
-      const thumb = await sharp(out)
-        .resize({ width: THUMB_WIDTH, withoutEnlargement: true })
-        .webp({ quality: 78 })
-        .toBuffer();
+      const abs = storage.resolve(fileKey);
+      const poster = await extractPoster(abs);
+      durationSecs = poster.durationSecs;
       thumbKey = storage.newKey('webp', 'thumbs');
-      await storage.save(thumbKey, thumb);
+      await storage.save(thumbKey, poster.buffer);
     }
-  } else {
-    // Video: store as-is (re-encoding 50 MB inline would block), generate poster.
-    const ext = EXT_BY_MIME[mime] || 'mp4';
-    fileKey = storage.newKey(ext, 'videos');
-    await storage.save(fileKey, buffer);
-
-    const abs = storage.resolve(fileKey);
-    const poster = await extractPoster(abs);
-    durationSecs = poster.durationSecs;
-    thumbKey = storage.newKey('webp', 'thumbs');
-    await storage.save(thumbKey, poster.buffer);
+    return { kind, fileKey, thumbKey, mime: outMime, sizeBytes, width, height, durationSecs };
+  } catch (error) {
+    await cleanupUnownedKeys([fileKey, thumbKey]);
+    throw error;
   }
 
-  return { kind, fileKey, thumbKey, mime: outMime, sizeBytes, width, height, durationSecs };
 }
 
 /** Persist an attachment row for a chat upload (message_id filled in on send). */
 export async function createAttachment(ownerId, processed) {
-  const res = await execute(
-    `INSERT INTO attachments
-       (message_id, kind, file_path, thumb_path, mime, size_bytes, width, height, duration_secs, owner_id, created_at, expires_at)
-     VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? HOUR))`,
-    [
-      processed.kind,
-      processed.fileKey,
-      processed.thumbKey,
-      processed.mime,
-      processed.sizeBytes,
-      processed.width,
-      processed.height,
-      processed.durationSecs,
-      ownerId,
-      env.MESSAGE_TTL_HOURS
-    ]
-  );
+  let res;
+  try {
+    res = await execute(
+      `INSERT INTO attachments
+         (message_id, kind, file_path, thumb_path, mime, size_bytes, width, height, duration_secs, owner_id, created_at, expires_at)
+       VALUES (NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, NOW(), DATE_ADD(NOW(), INTERVAL ? HOUR))`,
+      [
+        processed.kind,
+        processed.fileKey,
+        processed.thumbKey,
+        processed.mime,
+        processed.sizeBytes,
+        processed.width,
+        processed.height,
+        processed.durationSecs,
+        ownerId,
+        env.MESSAGE_TTL_HOURS
+      ]
+    );
+  } catch (error) {
+    await cleanupUnownedKeys([processed.fileKey, processed.thumbKey]);
+    throw error;
+  }
   const id = Number(res.insertId);
   return {
     attachmentId: id,
@@ -294,6 +345,12 @@ export async function savePhotoFile(ownerId, buffer, declaredMime) {
   };
 }
 
+/** Private optimized selfie evidence; never returns a public/media URL. */
+export async function saveVerificationFile(ownerId, buffer, declaredMime) {
+  const processed = await processUpload({ buffer, declaredMime, ownerId, purpose: 'verification' });
+  return { key: processed.fileKey, mime: processed.mime, sizeBytes: processed.sizeBytes };
+}
+
 /**
  * Remove a stored file by basename, wherever it actually lives.
  *
@@ -306,14 +363,8 @@ export async function savePhotoFile(ownerId, buffer, declaredMime) {
 export async function removeStoredFile(basename) {
   const safe = path.basename(String(basename || ''));
   if (!safe || !/^[A-Za-z0-9._-]+$/.test(safe)) return false;
-
-  for (const key of [`photos/${safe}`, `thumbs/${safe}`, `videos/${safe}`, safe]) {
-    if (await storage.exists(key)) {
-      await storage.remove(key).catch(() => {});
-      return true;
-    }
-  }
-  return false;
+  const result = await cleanupUnownedKeys([`photos/${safe}`, `thumbs/${safe}`, `videos/${safe}`, safe]);
+  return result.deletedFiles > 0;
 }
 
 export async function findPhotoKeyByBasename(basename) {
@@ -326,18 +377,16 @@ export async function findPhotoKeyByBasename(basename) {
 }
 
 /**
- * Authorised profile-photo lookup.
+ * Resolve a profile-photo basename back to an active profile row.
  *
- * `findPhotoKeyByBasename` only proves the file exists on disk. Profile photos
- * are personal media, so knowing (or having once been shown) a filename must
- * not grant permanent access. We resolve the basename back to its owner and
- * refuse the read when either side has blocked the other.
+ * Public profile links work signed out, so these profile photos are public too;
+ * the URL is not treated as a credential. We still refuse orphan files and
+ * photos whose owner is no longer active. An identified viewer is also denied
+ * when either side has blocked the other. Anonymous requests cannot be matched
+ * to a block record, which is inherent to a public share URL.
  *
- * Rules:
- *  - your own photos: always readable;
- *  - an orphan file with no owning row: 404 (deleted photos stay deleted);
- *  - a block in either direction: 404, never 403, so the response cannot be
- *    used to confirm that a specific person blocked you.
+ * A block returns 404, never 403, so signed-in viewers cannot confirm that a
+ * specific person blocked them.
  */
 export async function getPhotoForViewer(basename, viewerId) {
   const safe = path.basename(String(basename));
@@ -347,25 +396,28 @@ export async function getPhotoForViewer(basename, viewerId) {
   const owner = await queryOne(
     `SELECT p.user_id
        FROM user_photos p
+       JOIN users pu ON pu.id = p.user_id AND pu.status = 'active'
       WHERE p.url = ? OR p.thumb_url = ?
       UNION
      SELECT u.id AS user_id
        FROM users u
-      WHERE u.avatar_url = ?
+      WHERE u.avatar_url = ? AND u.status = 'active'
       LIMIT 1`,
     [url, url, url]
   );
 
-  // No owning row: the photo was deleted or never belonged to a profile.
+  // No active owning row: the photo was deleted or the profile was suspended.
   if (!owner) throw notFound('Photo not found.');
 
   const ownerId = Number(owner.user_id);
-  if (ownerId !== Number(viewerId)) {
+  const viewer = viewerId === null || viewerId === undefined ? null : Number(viewerId);
+  if (viewer !== null && !Number.isSafeInteger(viewer)) throw notFound('Photo not found.');
+  if (viewer !== null && ownerId !== viewer) {
     const blocked = await queryOne(
       `SELECT 1 AS x FROM blocks
         WHERE (blocker_id = ? AND blocked_id = ?) OR (blocker_id = ? AND blocked_id = ?)
         LIMIT 1`,
-      [viewerId, ownerId, ownerId, viewerId]
+      [viewer, ownerId, ownerId, viewer]
     );
     if (blocked) throw notFound('Photo not found.');
   }
@@ -382,14 +434,18 @@ export async function getPhotoForViewer(basename, viewerId) {
 
 export async function deleteAttachmentsByIds(ids) {
   if (!ids.length) return 0;
-  const ph = ids.map(() => '?').join(',');
-  const rows = await query(`SELECT file_path, thumb_path FROM attachments WHERE id IN (${ph})`, ids);
-  for (const r of rows) {
-    await storage.remove(r.file_path).catch(() => {});
-    if (r.thumb_path) await storage.remove(r.thumb_path).catch(() => {});
-  }
-  const res = await execute(`DELETE FROM attachments WHERE id IN (${ph})`, ids);
-  return res.affectedRows;
+  const placeholders = ids.map(() => '?').join(',');
+  const result = await withTransaction(async (conn) => {
+    const [rows] = await conn.execute(
+      `SELECT id, file_path, thumb_path FROM attachments WHERE id IN (${placeholders}) FOR UPDATE`, ids
+    );
+    const keys = rows.flatMap((row) => [row.file_path, row.thumb_path].filter(Boolean));
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+    const [deleted] = await conn.execute(`DELETE FROM attachments WHERE id IN (${placeholders})`, ids);
+    return { affectedRows: deleted.affectedRows, keys };
+  });
+  await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+  return result.affectedRows;
 }
 
 export function newUploadToken() {
@@ -412,18 +468,36 @@ export function socialUrl(key) {
 }
 
 /**
- * Run the standard media pipeline and return a handle for `socialMediaSchema`.
- * No DB row is written here: the moment/post insert owns the keys, which keeps
- * orphan cleanup a single job over one table instead of two.
+ * Run the standard media pipeline and reserve its keys under an opaque,
+ * owner-bound handle. A post/moment transaction consumes that reservation;
+ * the cleanup worker deletes expired reservations that a composer abandons.
  */
 export async function processSocialUpload({ buffer, declaredMime, ownerId }) {
   const processed = await processUpload({ buffer, declaredMime, ownerId, purpose: 'social' });
+  const uploadId = crypto.randomUUID();
+  const kind = processed.kind === 'video' ? 'video' : 'photo';
+  const url = socialUrl(processed.fileKey);
+  const thumbUrl = socialUrl(processed.thumbKey);
+
+  try {
+    await execute(
+      `INSERT INTO pending_social_uploads
+         (upload_id, owner_id, kind, file_key, thumb_key, media_url, thumb_url, expires_at)
+       VALUES (?, ?, ?, ?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL 2 HOUR))`,
+      [uploadId, ownerId, kind, processed.fileKey, processed.thumbKey, url, thumbUrl]
+    );
+  } catch (error) {
+    await cleanupUnownedKeys([processed.fileKey, processed.thumbKey]);
+    throw error;
+  }
+
+  // Storage keys remain server-side; content creation consumes this owner-bound
+  // handle in a transaction and expiry cleanup reaps abandoned uploads.
   return {
-    kind: processed.kind === 'video' ? 'video' : 'photo',
-    url: socialUrl(processed.fileKey),
-    thumbUrl: socialUrl(processed.thumbKey),
-    fileKey: processed.fileKey,
-    thumbKey: processed.thumbKey,
+    uploadId,
+    kind,
+    url,
+    thumbUrl,
     width: processed.width,
     height: processed.height,
     durationSecs: processed.durationSecs

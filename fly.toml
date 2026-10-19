@@ -28,8 +28,9 @@ primary_region = 'cdg' # closest Fly regions to Nigeria are generally Paris/Lisb
 # Secrets do not belong in this file. Load them, then deploy:
 #   fly secrets set DB_HOST=... DB_USER=... DB_PASSWORD=... DB_NAME=ember \
 #                   JWT_ACCESS_SECRET=... JWT_REFRESH_SECRET=... APP_ORIGIN=https://...
-# The image migrates itself on first boot (`--if-needed`), so there is nothing
-# else to run. To do it by hand instead: fly ssh console -C "node db/migrate.js"
+# The image applies pending ordered migrations at startup (`--if-needed` is a
+# compatibility alias), so there is no separate schema command. Back up and
+# rehearse each release migration on staging before deploying real data.
 
 [mounts]
   source = 'ember_uploads'

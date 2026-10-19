@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -448,6 +449,7 @@ function probeEnv(extra, expr) {
       APP_ORIGIN: 'http://localhost:3000',
       DB_SSL: '',
       DB_SSL_CA: '',
+      DB_SSL_CA_BASE64: '',
       DB_SSL_REJECT_UNAUTHORIZED: '',
       ...extra
     }
@@ -456,25 +458,82 @@ function probeEnv(extra, expr) {
 }
 const SSL_EXPR = "import('./server/src/config/env.js').then(m=>console.log(JSON.stringify(m.env.DB.ssl ?? null)),e=>{console.log('THREW:'+e.message)})";
 const sslOff = probeEnv({}, SSL_EXPR);
-check(sslOff.out === 'null', `DB_SSL unset leaves TLS off for the compose database (${sslOff.out})`);
+check(sslOff.out === 'null', `DB_SSL unset leaves TLS off for the private compose database (${sslOff.out})`);
 const sslOn = probeEnv({ DB_SSL: 'true' }, SSL_EXPR);
-check(sslOn.out === '{"rejectUnauthorized":true}', `DB_SSL=true verifies the certificate chain (${sslOn.out})`);
+const sslOnOptions = JSON.parse(sslOn.out);
+check(sslOnOptions.rejectUnauthorized === true && sslOnOptions.verifyIdentity === true, 'DB_SSL=true verifies the chain and database hostname');
 const sslNoVerify = probeEnv({ DB_SSL: '1', DB_SSL_REJECT_UNAUTHORIZED: 'false' }, SSL_EXPR);
-check(sslNoVerify.out === '{"rejectUnauthorized":false}', `rejectUnauthorized=false is honoured when a provider gives no CA (${sslNoVerify.out})`);
-const caFile = path.join(tmpUploads, 'smoke-ca.pem');
-fs.writeFileSync(caFile, '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n');
-const sslCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: caFile }, SSL_EXPR);
-check(/"ca":\[\{/.test(sslCa.out) && sslCa.out.includes('rejectUnauthorized'), `DB_SSL_CA loads the bundle and still verifies (${sslCa.out.slice(0, 60)})`);
-const sslMissingCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: '/definitely/not/here.pem' }, SSL_EXPR);
-check(/THREW:.*does not exist/.test(sslMissingCa.out + sslMissingCa.err), 'a bad DB_SSL_CA path is a startup error, not a silent no-TLS fallback');
+check(/THREW:.*Certificate verification cannot be disabled/.test(sslNoVerify.out + sslNoVerify.err), 'an insecure certificate-verification override is rejected');
 
-// The driver must actually receive it, or all of the above is decoration.
+// Use a public root from Node's trust store as a valid, non-secret CA fixture.
+const testCaPem = tls.rootCertificates[0];
+const testCaBase64 = Buffer.from(testCaPem, 'utf8').toString('base64');
+const caFile = path.join(tmpUploads, 'smoke-ca.pem');
+fs.writeFileSync(caFile, testCaPem);
+const sslCaFile = probeEnv({ DB_SSL: 'true', DB_SSL_CA: caFile }, SSL_EXPR);
+const sslCaFileOptions = JSON.parse(sslCaFile.out);
+check(
+  sslCaFileOptions.rejectUnauthorized === true && sslCaFileOptions.verifyIdentity === true && sslCaFileOptions.ca?.length === 1,
+  'DB_SSL_CA loads an in-runtime PEM certificate while retaining chain and identity verification'
+);
+const sslCaBase64 = probeEnv({ DB_SSL: 'true', DB_SSL_CA_BASE64: testCaBase64 }, SSL_EXPR);
+const sslCaBase64Options = JSON.parse(sslCaBase64.out);
+const decodedCa = Buffer.from(sslCaBase64Options.ca?.[0]?.data || []);
+check(
+  sslCaBase64Options.rejectUnauthorized === true && sslCaBase64Options.verifyIdentity === true && decodedCa.equals(Buffer.from(`${testCaPem}\n`)),
+  'DB_SSL_CA_BASE64 decodes the PEM bundle without weakening TLS verification'
+);
+const sslMissingCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: '/definitely/not/here.pem' }, SSL_EXPR);
+check(/THREW:.*does not exist inside this runtime/.test(sslMissingCa.out + sslMissingCa.err), 'a missing mounted CA file fails startup instead of silently falling back');
+const sslBadCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA_BASE64: Buffer.from('not a certificate').toString('base64') }, SSL_EXPR);
+check(/THREW:.*PEM-encoded CA certificates/.test(sslBadCa.out + sslBadCa.err), 'invalid certificate data is rejected before opening a connection');
+const sslBothCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: caFile, DB_SSL_CA_BASE64: testCaBase64 }, SSL_EXPR);
+check(/THREW:.*Set only one/.test(sslBothCa.out + sslBothCa.err), 'ambiguous CA sources fail fast');
+const aivenNoTls = probeEnv({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'false' }, SSL_EXPR);
+check(/THREW:.*Aiven MySQL requires DB_SSL=true/.test(aivenNoTls.out + aivenNoTls.err), 'Aiven hosts cannot start without TLS');
+const aivenNoCa = probeEnv({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true' }, SSL_EXPR);
+check(/THREW:.*Aiven MySQL requires its project CA/.test(aivenNoCa.out + aivenNoCa.err), 'Aiven hosts require their project CA');
+const aivenGood = probeEnv({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true', DB_SSL_CA_BASE64: testCaBase64 }, SSL_EXPR);
+check(JSON.parse(aivenGood.out).verifyIdentity === true, 'Aiven TLS configuration loads when its project CA is supplied');
+
+// Both the app pool and migration runner use the shared settings helper. Inspect
+// mysql2's resolved config without opening a network connection.
 const sslToDriver = spawnSync(
   process.execPath,
-  ['-e', "process.env.DB_SSL='true';process.env.DB_SSL_REJECT_UNAUTHORIZED='false';import('./server/src/db/pool.js').then(({pool})=>{const c=pool.pool.config.connectionConfig;console.log(JSON.stringify({ssl:!!c.ssl,rej:c.ssl.rejectUnauthorized}));return pool.end()})"],
-  { cwd: ROOT, encoding: 'utf8', env: { ...process.env, DB_HOST: 'h', DB_PORT: '3306', DB_USER: 'u', DB_NAME: 'd', APP_ORIGIN: 'http://localhost:3000' } }
+  [
+    '-e',
+    "Promise.all([import('./server/src/db/pool.js'),import('./server/src/db/connection-options.js')]).then(async ([{pool},{mysqlConnectionOptions}])=>{const app=pool.pool.config.connectionConfig;const migration=mysqlConnectionOptions({includeDatabase:false});console.log(JSON.stringify({appTls:{rejectUnauthorized:app.ssl.rejectUnauthorized,verifyIdentity:app.ssl.verifyIdentity,caCount:app.ssl.ca.length},sameHost:app.host===migration.host,samePort:app.port===migration.port,sameUser:app.user===migration.user,sameTls:app.ssl.ca[0].equals(migration.ssl.ca[0]),appHasDatabase:Boolean(app.database),migrationHasDatabase:Object.hasOwn(migration,'database')}));await pool.end()}).catch(e=>console.log('THREW:'+e.message))"
+  ],
+  {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DB_HOST: 'mysql-test.aivencloud.com',
+      DB_PORT: '3306',
+      DB_USER: 'u',
+      DB_NAME: 'd',
+      APP_ORIGIN: 'http://localhost:3000',
+      DB_SSL: 'true',
+      DB_SSL_CA: '',
+      DB_SSL_CA_BASE64: testCaBase64,
+      DB_SSL_REJECT_UNAUTHORIZED: ''
+    }
+  }
 );
-check(/"ssl":true,"rej":false/.test(sslToDriver.stdout), `mysql2 receives the ssl config (${sslToDriver.stdout.trim() || sslToDriver.stderr.slice(0, 80)})`);
+const driverOptions = JSON.parse(sslToDriver.stdout.trim().split('\n').pop());
+check(
+  driverOptions.appTls?.rejectUnauthorized === true &&
+    driverOptions.appTls?.verifyIdentity === true &&
+    driverOptions.appTls?.caCount === 1 &&
+    driverOptions.sameHost && driverOptions.samePort && driverOptions.sameUser &&
+    driverOptions.sameTls && driverOptions.appHasDatabase && !driverOptions.migrationHasDatabase,
+  `mysql2 app and migration settings share verified TLS (${sslToDriver.stdout.trim() || sslToDriver.stderr.slice(0, 120)})`
+);
+const migrationSource = fs.readFileSync(path.join(ROOT, 'db', 'migrate.js'), 'utf8');
+const poolSource = fs.readFileSync(path.join(ROOT, 'server', 'src', 'db', 'pool.js'), 'utf8');
+check(migrationSource.includes('...mysqlConnectionOptions({ includeDatabase: false })'), 'migration runner uses the shared MySQL connection settings');
+check(poolSource.includes('...mysqlConnectionOptions()'), 'web server pool uses the shared MySQL connection settings');
 
 function runCheck(envOverrides) {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'deploy-check.mjs'), '--offline'], {
@@ -485,9 +544,14 @@ function runCheck(envOverrides) {
       ...process.env,
       NODE_ENV: 'production',
       DB_HOST: 'db.internal',
+      DB_PORT: '3306',
       DB_USER: 'ember',
       DB_NAME: 'ember',
       DB_PASSWORD: 'a-real-password-here',
+      DB_SSL: '',
+      DB_SSL_CA: '',
+      DB_SSL_CA_BASE64: '',
+      DB_SSL_REJECT_UNAUTHORIZED: '',
       // Deliberately not 'aaaa...': the checker rejects single-character repeats as
       // placeholders, so the "sane config" fixture has to look like a real secret.
       JWT_ACCESS_SECRET: '0f3a9c7b1e5d8a2c4b6f0d1e2c3a4b5c6d7e8f90',
@@ -503,6 +567,10 @@ function runCheck(envOverrides) {
 }
 const goodCfg = runCheck({ DB_SSL: 'true' });
 check(goodCfg.status === 0, `deploy-check passes a sane production config (exit ${goodCfg.status})`, goodCfg.out.split('\n').filter((l) => /FAIL/.test(l)).join('\n'));
+const aivenMissingCaCheck = runCheck({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true' });
+check(aivenMissingCaCheck.status === 1 && /Aiven MySQL requires its project CA/.test(aivenMissingCaCheck.out), 'deploy preflight blocks Aiven without its project CA');
+const aivenCaCheck = runCheck({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true', DB_SSL_CA_BASE64: testCaBase64 });
+check(aivenCaCheck.status === 0 && /provider CA loaded/.test(aivenCaCheck.out), 'offline deploy preflight accepts verified Aiven CA configuration');
 const httpOrigin = runCheck({ APP_ORIGIN: 'http://ember.example.com' });
 check(httpOrigin.status === 1 && /APP_ORIGIN/.test(httpOrigin.out), 'deploy-check fails an http origin in production');
 const plainRemoteDb = runCheck({ DB_HOST: 'gateway.prod.tidbcloud.com', DB_SSL: 'false' });
@@ -518,46 +586,76 @@ const loopback = runCheck({ FORCE_HTTPS: '1', TRUST_PROXY: '0', NODE_ENV: 'devel
 check(loopback.status === 1 && /loop every request forever/.test(loopback.out), 'deploy-check catches the redirect loop even in dev');
 
 // --------------------------------------------------------------------------
-section('11. Migration guard: a restart must never destroy data');
+section('11. Ordered, checksummed migrations: safe adoption and restart behavior');
 
-// db/schema.sql is a snapshot, not a delta: it DROPs and recreates all 42 tables.
-// Both the image start command and docker-compose call `node db/migrate.js
-// --if-needed` at every container start, so the no-op path is load-bearing for
-// data survival, not just a nicety. Assert the shape of the schema file, then
-// the decision table the boot path runs on, then the wiring in each deploy file.
-const { decideMigration } = await import('../db/migrate.js');
-check(true, 'db/migrate.js imports without touching the database (testable guard)');
+const { adaptForMariaDb, baselineTableColumns, decideMigration, loadMigrations, splitStatements } =
+  await import('../db/migrate.js');
+check(true, 'db/migrate.js imports without connecting to or modifying a database');
 
-const schemaSql = fs.readFileSync(path.join(ROOT, 'db', 'schema.sql'), 'utf8');
-const drops = (schemaSql.match(/^DROP TABLE IF EXISTS/gm) || []).length;
-const bareCreates = (schemaSql.match(/^CREATE TABLE /gm) || []).length;
-const guardedCreates = (schemaSql.match(/^CREATE TABLE IF NOT EXISTS/gm) || []).length;
-check(bareCreates === 42 && guardedCreates === 0, `the snapshot creates all 42 tables unconditionally (${bareCreates} bare, ${guardedCreates} guarded)`);
-check(drops === 23, `23 of those tables are dropped first (${drops}) - a partial wipe, which is why re-running is never safe`);
-check(drops < bareCreates, 'the drop list is incomplete, so a second run aborts partway rather than rebuilding cleanly');
+const migrations = await loadMigrations(path.join(ROOT, 'db', 'migrations'));
+check(migrations.length >= 2, `versioned migrations are discovered (${migrations.length} files)`);
+check(migrations[0]?.filename === '0001_baseline.sql', 'the initial schema is a numbered baseline migration');
+check(migrations.every((m) => /^[0-9]{4}$/.test(m.version) && /^[a-f0-9]{64}$/.test(m.checksum)), 'migration versions and SHA-256 checksums are stable-shaped');
+const baselineSql = fs.readFileSync(path.join(ROOT, 'db', 'migrations', '0001_baseline.sql'), 'utf8');
+const snapshotSql = fs.readFileSync(path.join(ROOT, 'db', 'schema.sql'), 'utf8');
+const baselineShape = baselineTableColumns(baselineSql);
+check(baselineShape.size === 42, `baseline contains all 42 expected business tables (found ${baselineShape.size})`);
+check([...baselineShape.values()].reduce((n, columns) => n + columns.length, 0) === 330, 'baseline parser accounts for 330 column definitions');
+check(snapshotSql === baselineSql, 'db/schema.sql documents the same initial baseline instead of a separate destructive snapshot');
+check(splitStatements(baselineSql).length === 43, 'SQL statement splitting handles the SET statement and all 42 table definitions');
+check(adaptForMariaDb('CREATE TABLE x (id INT) COLLATE=utf8mb4_0900_ai_ci').includes('utf8mb4_general_ci'), 'MariaDB collation compatibility remains explicit');
+
+const migrationFiles = migrations.map((m) => m.sql).join('\n');
+check(!/\b(?:DROP\s+(?:DATABASE|TABLE)|TRUNCATE\s+TABLE)\b/i.test(migrationFiles), 'normal versioned migrations contain no database/table drop or truncate');
+check(/UPDATE verifications[\s\S]*?WHERE status <> 'pending'[\s\S]*?SET file_path = NULL/i.test(migrations.find((migration) => migration.version === '0002')?.sql || ''), 'reviewed verification file references are cleared after queueing deletion');
+check(/ADD COLUMN revoked_at DATETIME NULL/.test(migrations.find((migration) => migration.version === '0003')?.sql || ''), 'verification issuance history is retained through an additive revocation marker');
+const migrateSrc = fs.readFileSync(path.join(ROOT, 'db', 'migrate.js'), 'utf8');
+check(
+  /if \(FRESH\) await assertDestructiveResetAllowed\(database\)/.test(migrateSrc) &&
+    /if \(FRESH\)\s+\{[\s\S]*?DROP\s+DATABASE\s+IF\s+EXISTS[\s\S]*?\n\s+\}/.test(migrateSrc),
+  'DROP DATABASE is reachable only after the explicit --fresh guard'
+);
 
 const d0 = decideMigration({});
-check(d0.action === 'apply' && !d0.destructive, 'empty database: first boot provisions the schema');
-const d1 = decideMigration({ existingTables: 42 });
-check(d1.action === 'refuse', 'schema present + no flags: refuses instead of wiping');
-const d2 = decideMigration({ existingTables: 42, ifNeeded: true });
-check(d2.action === 'skip', '--if-needed against an existing schema: no-op, which is what restarts run');
-const d3 = decideMigration({ existingTables: 0, ifNeeded: true });
-check(d3.action === 'apply' && !d3.destructive, '--if-needed against an empty database still provisions it');
-const d4 = decideMigration({ existingTables: 42, fresh: true });
-check(d4.action === 'apply', '--fresh is the only way through, and it recreates from the snapshot');
-const d5 = decideMigration({ existingTables: 1 });
-check(d5.action === 'refuse', 'a half-migrated database (1 table) is refused too, not papered over');
-const migrateSrc = fs.readFileSync(path.join(ROOT, 'db', 'migrate.js'), 'utf8');
-check(!migrateSrc.includes("'--force'"), 'there is no --force flag to reach for by accident');
+check(d0.action === 'apply', 'empty database applies the ordered baseline');
+const d1 = decideMigration({ existingTables: 42, legacyBaselineValid: true });
+check(d1.action === 'adopt', 'a validated complete legacy schema is adopted without replaying baseline DDL');
+const d2 = decideMigration({ existingTables: 42, legacyBaselineValid: true, hasHistory: true, pendingCount: 0 });
+check(d2.action === 'skip', 'complete migration history with no pending version is a no-op');
+const d3 = decideMigration({ existingTables: 42, legacyBaselineValid: true, hasHistory: true, pendingCount: 1 });
+check(d3.action === 'apply', 'known migration history applies only pending numbered versions');
+const d4 = decideMigration({ existingTables: 1, legacyBaselineValid: false });
+check(d4.action === 'refuse', 'partial or unrecognized schemas are refused rather than overwritten');
+check(migrateSrc.includes('--target=') && migrateSrc.includes('Checksum mismatch'), 'operators can target a version and checksum drift is refused');
+check(migrateSrc.includes('GET_LOCK') && migrateSrc.includes('Migration history has a gap'), 'migrations serialize concurrent runners and refuse non-contiguous history');
+check(migrateSrc.indexOf('GET_LOCK') < migrateSrc.indexOf('DROP DATABASE IF EXISTS'), 'migration lock is acquired before even the guarded destructive reset path');
+
+const freshGuardProd = spawnSync(process.execPath, [path.join(ROOT, 'db', 'migrate.js'), '--fresh'], {
+  cwd: ROOT, encoding: 'utf8', timeout: 10000,
+  env: {
+    ...process.env, NODE_ENV: 'production', DB_HOST: 'db', DB_PORT: '3306', DB_USER: 'smoke',
+    DB_PASSWORD: 'smoke-only', DB_NAME: 'smoke_never_connects', APP_ORIGIN: 'https://example.invalid',
+    JWT_ACCESS_SECRET: 'a'.repeat(48), JWT_REFRESH_SECRET: 'b'.repeat(48),
+    ALLOW_DESTRUCTIVE_RESET: '1', CONFIRM_DROP_DATABASE: 'smoke_never_connects'
+  }
+});
+check(freshGuardProd.status === 1 && /disabled in production/.test(`${freshGuardProd.stdout}${freshGuardProd.stderr}`), '--fresh refuses in production before opening a database connection');
+const freshGuardUnconfirmed = spawnSync(process.execPath, [path.join(ROOT, 'db', 'migrate.js'), '--fresh'], {
+  cwd: ROOT, encoding: 'utf8', timeout: 10000,
+  env: { ...process.env, NODE_ENV: 'development', ALLOW_DESTRUCTIVE_RESET: '', CONFIRM_DROP_DATABASE: '' }
+});
+check(freshGuardUnconfirmed.status === 1 && /--fresh refused/.test(`${freshGuardUnconfirmed.stdout}${freshGuardUnconfirmed.stderr}`), '--fresh requires both explicit development reset guards');
 
 const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8');
-check(/CMD \["sh", "-c", "node db\/migrate\.js --if-needed && exec node server\/server\.js"\]/.test(dockerfile), 'Dockerfile CMD migrates only if needed, then execs the server');
+check(/CMD \["sh", "-c", "node db\/migrate\.js --if-needed && exec node server\/server\.js"\]/.test(dockerfile), 'Dockerfile applies pending migrations before starting the server');
+check(/COPY scripts\/bootstrap-admin\.mjs scripts\/deploy-check\.mjs scripts\/db-ping\.mjs \.\/scripts\//.test(dockerfile), 'production image includes admin, deploy-check, and read-only DB ping tools');
+const packageScripts = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts;
+const dbPingSource = fs.readFileSync(path.join(ROOT, 'scripts', 'db-ping.mjs'), 'utf8');
+check(packageScripts['db:ping'] === 'node scripts/db-ping.mjs' && dbPingSource.includes('assertDbConnection'), 'db:ping provides a read-only connection check using the application pool');
 const composeRaw = fs.readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8');
-check(composeRaw.includes('node db/migrate.js --if-needed && exec node server/server.js'), 'compose start command matches the image (skip-if-present, exec for clean shutdown)');
+check(composeRaw.includes('node db/migrate.js --if-needed && exec node server/server.js'), 'compose start command matches the image');
 const renderYml = fs.readFileSync(path.join(ROOT, 'render.yaml'), 'utf8');
-check(!/preDeployCommand:\s*node db\/migrate\.js\s*$/m.test(renderYml), 'render.yaml has no bare preDeployCommand that would wipe data on every deploy');
-check(/not re-runnable/.test(migrateSrc) && /--if-needed/.test(migrateSrc), 'the refusal message names the reason and both ways out');
+check(!/preDeployCommand:\s*node db\/migrate\.js\s*$/m.test(renderYml), 'Render does not separately run a migration command that could race the boot process');
 
 // --------------------------------------------------------------------------
 section('12. CI workflow files are valid for the Actions schema, not just YAML');
@@ -608,14 +706,17 @@ for (const { f, doc } of workflows) {
   check(svc.healthCheckPath === '/api/health', 'Render health-checks the one path forceHttps() exempts');
   check(svc.plan && svc.plan !== 'free', `plan is ${svc.plan}: the free instance sleeps, which drops every socket and stops the expiry cron`);
   check(svc.disk?.mountPath === env.UPLOAD_DIR?.value, `the persistent disk is mounted where UPLOAD_DIR writes (${svc.disk?.mountPath})`);
-  const secretish = ['DB_PASSWORD', 'DB_USER', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'TURN_CREDENTIAL', 'TURN_USERNAME'];
+  check(env.DB_SSL?.value === 'true', 'Render enables verified TLS for the managed database');
+  check(env.DB_SSL_CA_BASE64?.sync === false, 'the Aiven project CA is supplied as a private Render environment value, not committed');
+  check(!env.DB_SSL_REJECT_UNAUTHORIZED, 'Render does not expose an insecure TLS-verification override');
+  const secretish = ['DB_PASSWORD', 'DB_USER', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_SSL_CA_BASE64', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'TURN_CREDENTIAL', 'TURN_USERNAME'];
   const hardcoded = secretish.filter((k) => env[k] && env[k].value !== undefined);
-  check(hardcoded.length === 0, 'no database credential is hardcoded in render.yaml', hardcoded.length ? 'hardcoded: ' + hardcoded.join(', ') : 'every one is prompted (sync: false) or generated');
+  check(hardcoded.length === 0, 'no database credential or CA certificate is hardcoded in render.yaml', hardcoded.length ? 'hardcoded: ' + hardcoded.join(', ') : 'every value is prompted (sync: false) or generated');
   const jwt = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'].filter((k) => env[k]?.generateValue === true);
   check(jwt.length === 2, 'both JWT secrets are generated by Render (generateValue: true), not pasted into the repo');
   // Comments explain the choices; only the live YAML can break a deploy.
   const live = raw.split('\n').filter((l) => !l.trim().startsWith('#')).join('\n');
-  check(!/preDeployCommand/.test(live), 'no preDeployCommand key: it needs a paid plan and the schema file is not re-runnable');
+  check(!/preDeployCommand/.test(live), 'no separate preDeployCommand competes with the image migration runner');
   check(!/(password|secret|token|credential)\s*:\s*['"]?[A-Za-z0-9+/_-]{8,}/i.test(live), 'render.yaml contains nothing that looks like a live secret');
   check(fs.existsSync(path.join(ROOT, svc.dockerfilePath.replace(/^\.\//, ''))), `the blueprint's ${svc.dockerfilePath} exists in the repo`);
 }
@@ -647,8 +748,26 @@ if (ci) {
   const boot = (verify?.steps || []).find((st) => String(st.name).startsWith('Boot with seeded data'));
   check(/route-sweep\.mjs/.test(String(boot?.run)), 'deploy-verify runs the route sweep against the live server');
   check(/smoke-socket\.js/.test(String(boot?.run)), 'deploy-verify runs the Socket.IO suite against the live server');
-  const guard = (verify?.steps || []).find((st) => String(st.name).includes('restart must not destroy data'));
-  check(/--if-needed/.test(String(guard?.run)) && /survive-restart/.test(String(guard?.run)), 'the boot-time migration is proven non-destructive on real data');
+  check(/smoke-browser\.js/.test(String(boot?.run)), 'deploy-verify runs the browser suite against the live server');
+  const browserInstall = (verify?.steps || []).find((st) => String(st.name).startsWith('Install Chromium'));
+  check(/playwright install --with-deps chromium/.test(String(browserInstall?.run)), 'CI installs a managed Chromium build for reproducible browser tests');
+  const baseline = (verify?.steps || []).find((st) => String(st.name).startsWith('Apply only the baseline'));
+  check(/--target=0001/.test(String(baseline?.run)), 'deploy-verify starts with only the baseline so MySQL 8 exercises pending DDL');
+  const migration = (verify?.steps || []).find((st) => String(st.name).startsWith('Apply additive migration'));
+  const migrationRun = String(migration?.run || '');
+  check(/0002_admin_security/.test(migrationRun) && /migration-sentinel/.test(migrationRun), 'MySQL integration applies a pending migration while preserving a synthetic row');
+  const pendingMigrations = migrations.slice(1);
+  check(
+    pendingMigrations.every((item) => migrationRun.includes(item.filename.replace(/\.sql$/, ''))),
+    `CI explicitly asserts every pending migration through ${migrations.at(-1)?.version}`
+  );
+  check(migrationRun.includes('[ "$tables" = "49" ]'), 'CI table-count assertion includes the 48th business table and migration ledger');
+  check(/--if-needed/.test(migrationRun) && /Checksum mismatch/.test(migrationRun) && !/--fresh/.test(migrationRun), 'restart no-op and checksum refusal are tested without a destructive reset');
+  const securityTests = (ci.jobs?.checks?.steps || []).find((st) => String(st.name).startsWith('Security unit suite'));
+  check(/npm run test:security/.test(String(securityTests?.run)), 'CI executes the non-empty security unit suite');
+  const securityIntegration = fs.readFileSync(path.join(ROOT, 'scripts', 'security-integration.mjs'), 'utf8');
+  check(/ALLOW_SYNTHETIC_SECURITY_TESTS=1[\s\S]*security-integration\.mjs/.test(String(boot?.run)), 'CI invokes the synthetic MySQL/API security integration suite');
+  check(/process\.env\.CI === 'true'/.test(securityIntegration) && /process\.env\.DB_NAME === 'ember_ci'/.test(securityIntegration) && (securityIntegration.match(/\['127\.0\.0\.1', 'localhost'\]/g) || []).length >= 2, 'the mutating integration suite refuses non-local, non-CI, non-disposable databases');
   const prod = (verify?.steps || []).find((st) => String(st.name).includes('production mode'));
   check(/FORCE_HTTPS=1/.test(String(prod?.run)) && /301/.test(String(prod?.run)) && /Secure/.test(String(prod?.run)), 'deploy-verify boots in production and checks HTTPS upgrade + Secure cookies');
 }

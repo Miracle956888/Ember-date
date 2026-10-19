@@ -297,16 +297,21 @@ const privateHost =
   // a unix socket never touches the network
   Boolean(process.env.DB_SOCKET);
 if (env.DB.ssl) {
-  ok('DB TLS', `on (rejectUnauthorized=${env.DB.ssl.rejectUnauthorized !== false}${env.DB.ssl.ca ? ', provider CA loaded' : ', system CAs'})`);
-  if (env.DB.ssl.rejectUnauthorized === false) {
-    warn('DB TLS without verification', 'rejectUnauthorized is off', 'the connection is encrypted but anyone in the middle can impersonate your database; set DB_SSL_CA to the provider bundle instead');
-  }
+  const hasProviderCa = Array.isArray(env.DB.ssl.ca) && env.DB.ssl.ca.length > 0;
+  ok(
+    'DB TLS',
+    `on (certificate chain + hostname verification${hasProviderCa ? ', provider CA loaded' : ', system CAs'})`
+  );
 } else if (privateHost) {
   ok('DB transport', `${env.DB.host || 'unset'} looks private - no TLS needed`);
 } else if (prod) {
-  bad('DB TLS off to a remote host', `DB_HOST=${env.DB.host || '(unset)'} with no DB_SSL`, 'set DB_SSL=true (plus DB_SSL_CA if the provider supplies a bundle); managed MySQL rejects plaintext anyway');
+  bad(
+    'DB TLS off to a remote host',
+    `DB_HOST=${env.DB.host || '(unset)'} with no DB_SSL`,
+    'set DB_SSL=true; for Aiven also set DB_SSL_CA_BASE64 to the service project CA PEM'
+  );
 } else {
-  warn('DB TLS off to a remote host', `DB_HOST=${env.DB.host}`, 'fine over VPN; set DB_SSL=true on anything crossing the open internet');
+  warn('DB TLS off to a remote host', `DB_HOST=${env.DB.host}`, 'set DB_SSL=true on public-network connections; use DB_SSL_CA_BASE64 for the Aiven project CA');
 }
 
 // ------------------------------------------------------------------ seed policy

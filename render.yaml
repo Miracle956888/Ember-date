@@ -49,12 +49,11 @@ services:
       name: ember-uploads
       mountPath: /app/uploads
       sizeGB: 1
-    # No preDeployCommand on purpose. Two reasons: it needs a paid instance type,
-    # and `node db/migrate.js` is destructive - schema.sql DROPs and recreates all
-    # 42 tables, so running it before every deploy would wipe the database on
-    # every push. The image's own start command runs `node db/migrate.js
-    # --if-needed`, which provisions an empty database on first boot and no-ops
-    # after that, so the schema is applied exactly once.
+    # No separate migration command: the image applies pending ordered,
+    # checksummed migrations before the app starts. The runner uses a DB advisory
+    # lock, validates legacy-baseline adoption, and never replays the baseline
+    # over existing rows. Migrations still need a backup and staging rehearsal;
+    # this boot ordering does not promise zero-downtime or automatic rollback.
     envVars:
       - key: NODE_ENV
         value: production
@@ -63,9 +62,9 @@ services:
       - key: DB_HOST
         sync: false # external MySQL hostname
       - key: DB_PORT
-        # Prompted, not hardcoded: Aiven and self-hosted MySQL listen on 3306,
-        # TiDB Cloud Serverless on 4000. Getting this wrong is a connection
-        # timeout that looks like a firewall problem.
+        # Prompted, not hardcoded: managed providers assign their own ports.
+        # Use the exact port shown in the database provider's connection details; a
+        # mismatch looks like a firewall or connection-timeout problem.
         sync: false
       - key: DB_USER
         sync: false
@@ -76,15 +75,14 @@ services:
         # uses the service name, TiDB uses `defaultdb`), and a guessed value here
         # is an `Unknown database` error at first boot, not at deploy time.
         sync: false
-      # TiDB Cloud Serverless and Aiven both require TLS; without these the
-      # connection is refused with "insecure transport are prohibited".
+      # Managed MySQL requires TLS. Aiven hosts require their service project CA.
       - key: DB_SSL
         value: "true"
-      # If your provider hands you a CA bundle, mount it into the image and set
-      # DB_SSL_CA to its path. Leaving reject-on without a CA works only when the
-      # provider uses a globally trusted certificate chain.
-      - key: DB_SSL_REJECT_UNAUTHORIZED
-        value: "true"
+      # Download the Aiven service CA PEM and set its one-line base64 value in
+      # Render's environment. The app validates it and keeps chain + hostname
+      # verification enabled. Do not set a rejectUnauthorized=false override.
+      - key: DB_SSL_CA_BASE64
+        sync: false
       # Render generates real random values for these on first deploy, which is
       # better than any placeholder you would type at 2am.
       - key: JWT_ACCESS_SECRET
@@ -104,6 +102,26 @@ services:
       - key: TURN_USERNAME
         sync: false
       - key: TURN_CREDENTIAL
+        sync: false
+      # Optional providers; keep credentials in Render's secret environment,
+      # never in render.yaml. Empty values leave delivery visibly unconfigured.
+      - key: SMTP_HOST
+        sync: false
+      - key: SMTP_PORT
+        value: "587"
+      - key: SMTP_SECURE
+        value: "false"
+      - key: SMTP_USER
+        sync: false
+      - key: SMTP_PASSWORD
+        sync: false
+      - key: SMTP_FROM
+        sync: false
+      - key: TWILIO_ACCOUNT_SID
+        sync: false
+      - key: TWILIO_AUTH_TOKEN
+        sync: false
+      - key: TWILIO_FROM_NUMBER
         sync: false
       - key: FORCE_HTTPS
         value: "1"

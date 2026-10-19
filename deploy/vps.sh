@@ -198,9 +198,11 @@ cat <<EOF
     deploy again  cd $APP_DIR && git pull && ${C} up -d --build
 
     Next, in this order:
-      1. npm run deploy:check        # from $APP_DIR - catches the rest, offline style
-      2. cd $APP_DIR && ${C} exec app node db/migrate.js --if-needed   # boot already runs this
-      3. ONLY IF YOU WANT DEMO DATA:
-         cd $APP_DIR && ${C} exec -e SEED_DEMO=1 -e DEMO_PASSWORD=change-me app node db/seed.js
-         (it deletes existing users - never run it once real people have signed up)
+      1. Configure and test SMTP in .env before requesting email verification.
+      2. cd $APP_DIR && ${C} exec app node scripts/deploy-check.mjs   # live DB/config check
+      3. Create your own account through the site and verify its email.
+      4. Bootstrap the first admin once:
+         cd $APP_DIR && ${C} exec -e BOOTSTRAP_ADMIN_USERNAME=your_handle app node scripts/bootstrap-admin.mjs
+
+    Do not run db/seed.js, db/reset, or db/migrate.js --fresh on this host.
 EOF

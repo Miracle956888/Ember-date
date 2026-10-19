@@ -1,37 +1,13 @@
 -- ============================================================
---  Ephemeral Chat - MySQL 8 schema
---  Collation: utf8mb4_0900_ai_ci
---  All FKs cascade so unmatching / deleting a user wipes content.
+-- Immutable initial schema baseline. Applied only to an empty database by db/migrate.js.
+-- Existing databases are adopted only after all baseline tables are validated.
+-- Foreign-key actions encode product ownership and retention behavior.
 -- ============================================================
 
 SET NAMES utf8mb4;
-SET FOREIGN_KEY_CHECKS = 0;
+-- Historical snapshot: no DROP statements; new changes belong in db/migrations.
 
-DROP TABLE IF EXISTS message_locations;
-DROP TABLE IF EXISTS profile_prompts;
-DROP TABLE IF EXISTS user_interests;
-DROP TABLE IF EXISTS interests;
-DROP TABLE IF EXISTS encounters;
-DROP TABLE IF EXISTS profile_views;
-DROP TABLE IF EXISTS favorites;
-DROP TABLE IF EXISTS taps;
-DROP TABLE IF EXISTS boosts;
-DROP TABLE IF EXISTS verifications;
-DROP TABLE IF EXISTS user_locations;
-DROP TABLE IF EXISTS user_settings;
-DROP TABLE IF EXISTS reports;
-DROP TABLE IF EXISTS blocks;
-DROP TABLE IF EXISTS call_logs;
-DROP TABLE IF EXISTS attachments;
-DROP TABLE IF EXISTS messages;
-DROP TABLE IF EXISTS conversations;
-DROP TABLE IF EXISTS matches;
-DROP TABLE IF EXISTS swipes;
-DROP TABLE IF EXISTS user_photos;
-DROP TABLE IF EXISTS refresh_tokens;
-DROP TABLE IF EXISTS users;
 
-SET FOREIGN_KEY_CHECKS = 1;
 
 -- ------------------------------------------------------------
 -- users

@@ -48,37 +48,104 @@ if (isProd) {
 }
 
 /**
- * TLS for the database connection.
+ * Load one or more trusted CA certificates without ever weakening TLS checks.
+ * `DB_SSL_CA_BASE64` is intended for Render: it carries the PEM file as a
+ * single-line environment variable, so no certificate has to be baked into the
+ * image. `DB_SSL_CA` remains available for a PEM file mounted inside the runtime.
+ */
+function loadDbCa() {
+  const caPath = (process.env.DB_SSL_CA || '').trim();
+  const caBase64 = (process.env.DB_SSL_CA_BASE64 || '').trim();
+  if (caPath && caBase64) {
+    throw new Error('[env] Set only one of DB_SSL_CA (mounted PEM path) or DB_SSL_CA_BASE64 (base64 PEM).');
+  }
+  if (!caPath && !caBase64) return null;
+
+  let pemBytes;
+  let source;
+  if (caBase64) {
+    const compact = caBase64.replace(/\s+/g, '');
+    if (compact.length > 131072 || !/^[A-Za-z0-9+/]+={0,2}$/.test(compact) || compact.length % 4 === 1) {
+      throw new Error('[env] DB_SSL_CA_BASE64 must be standard base64-encoded PEM certificate data.');
+    }
+    pemBytes = Buffer.from(compact, 'base64');
+    const canonical = pemBytes.toString('base64').replace(/=+$/, '');
+    if (!pemBytes.length || canonical !== compact.replace(/=+$/, '')) {
+      throw new Error('[env] DB_SSL_CA_BASE64 is not valid base64-encoded PEM certificate data.');
+    }
+    source = 'DB_SSL_CA_BASE64';
+  } else {
+    const resolvedCaPath = path.isAbsolute(caPath) ? caPath : path.resolve(ROOT_DIR, caPath);
+    if (!fs.existsSync(resolvedCaPath) || !fs.statSync(resolvedCaPath).isFile()) {
+      throw new Error(`[env] DB_SSL_CA file does not exist inside this runtime: ${resolvedCaPath}`);
+    }
+    pemBytes = fs.readFileSync(resolvedCaPath);
+    source = 'DB_SSL_CA';
+  }
+
+  const pem = pemBytes.toString('utf8').replace(/\r\n/g, '\n').trim();
+  const certificatePattern = /-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g;
+  const certificates = pem.match(certificatePattern) || [];
+  const remainder = pem.replace(/-----BEGIN CERTIFICATE-----[\s\S]+?-----END CERTIFICATE-----/g, '').trim();
+  if (!certificates.length || remainder) {
+    throw new Error(`[env] ${source} must contain one or more PEM-encoded CA certificates.`);
+  }
+
+  for (const [index, certificatePem] of certificates.entries()) {
+    let certificate;
+    try {
+      certificate = new crypto.X509Certificate(certificatePem);
+    } catch {
+      throw new Error(`[env] ${source} contains an invalid X.509 certificate at block ${index + 1}.`);
+    }
+    if (!certificate.ca) {
+      throw new Error(`[env] ${source} certificate block ${index + 1} is not a CA certificate.`);
+    }
+  }
+
+  return certificates.map((certificatePem) => Buffer.from(`${certificatePem}\n`, 'utf8'));
+}
+
+/**
+ * Database TLS policy.
  *
- * Free managed MySQL (TiDB Cloud Serverless, Aiven) refuses a plaintext
- * connection outright - "Connections using insecure transport are prohibited" -
- * so without this the app simply cannot use them. Off by default: a container on
- * the compose network and a localhost socket do not need it.
- *
- *   DB_SSL=false                       no TLS (default)
- *   DB_SSL=true                        TLS, verified against the system CAs
- *   DB_SSL=true + DB_SSL_CA=ca.pem     verified against the provider's CA bundle
- *   DB_SSL=verify-full is not a thing here; to accept a self-signed cert without
- *   a CA file use DB_SSL_REJECT_UNAUTHORIZED=false, which also accepts an
- *   impersonating server - use it only when you cannot do better.
+ * Local Compose/localhost connections may remain plaintext. Remote databases
+ * require TLS; Aiven hosts additionally require the project CA so Node can build
+ * a trusted chain. The mysql2 driver is configured to verify both that chain
+ * and the DB_HOST identity. There is deliberately no insecure override.
  */
 function dbSsl() {
   const raw = (process.env.DB_SSL || '').trim().toLowerCase();
-  if (raw === '' || raw === '0' || raw === 'false' || raw === 'off') return undefined;
-
-  const reject = process.env.DB_SSL_REJECT_UNAUTHORIZED;
-  const ssl = {
-    rejectUnauthorized: !(reject === '0' || reject === 'false' || reject === 'no-verify')
-  };
-
-  const ca = (process.env.DB_SSL_CA || '').trim();
-  if (ca) {
-    if (!fs.existsSync(ca)) {
-      throw new Error(`[env] DB_SSL_CA points at a file that does not exist: ${ca}`);
-    }
-    ssl.ca = [fs.readFileSync(ca)];
+  const enabled = ['1', 'true', 'yes', 'on'].includes(raw);
+  const disabled = ['', '0', 'false', 'no', 'off'].includes(raw);
+  if (!enabled && !disabled) {
+    throw new Error('[env] DB_SSL must be true or false.');
   }
-  return ssl;
+
+  const rejectSetting = (process.env.DB_SSL_REJECT_UNAUTHORIZED || '').trim().toLowerCase();
+  if (rejectSetting && !['1', 'true', 'yes', 'on'].includes(rejectSetting)) {
+    throw new Error('[env] Certificate verification cannot be disabled; remove DB_SSL_REJECT_UNAUTHORIZED or set it to true and install the provider CA.');
+  }
+
+  const ca = loadDbCa();
+  const dbHost = (process.env.DB_HOST || '').trim().toLowerCase();
+  const isAivenHost = dbHost === 'aivencloud.com' || dbHost.endsWith('.aivencloud.com');
+
+  if (!enabled) {
+    if (ca) throw new Error('[env] DB_SSL_CA/DB_SSL_CA_BASE64 requires DB_SSL=true.');
+    if (isAivenHost) throw new Error('[env] Aiven MySQL requires DB_SSL=true and its project CA certificate.');
+    return undefined;
+  }
+
+  if (isAivenHost && !ca) {
+    throw new Error('[env] Aiven MySQL requires its project CA: set DB_SSL_CA_BASE64 in the host environment or mount a PEM file and set DB_SSL_CA.');
+  }
+
+  return {
+    rejectUnauthorized: true,
+    verifyIdentity: true,
+    ...(ca ? { ca } : {})
+  };
 }
 
 function int(name, fallback) {
@@ -132,6 +199,22 @@ export const env = Object.freeze({
   MAX_VIDEO_MB: int('MAX_VIDEO_MB', 50),
   UPLOAD_DIR: path.isAbsolute(uploadDirRaw) ? uploadDirRaw : path.resolve(ROOT_DIR, uploadDirRaw),
   PUBLIC_DIR: path.resolve(ROOT_DIR, 'public'),
+
+  SMTP: Object.freeze({
+    host: (process.env.SMTP_HOST || '').trim(),
+    port: int('SMTP_PORT', 587),
+    secure: process.env.SMTP_SECURE === '1' || process.env.SMTP_SECURE === 'true',
+    user: process.env.SMTP_USER || '',
+    password: process.env.SMTP_PASSWORD || '',
+    from: (process.env.SMTP_FROM || '').trim(),
+    configured: Boolean(process.env.SMTP_HOST && process.env.SMTP_FROM)
+  }),
+  TWILIO: Object.freeze({
+    accountSid: process.env.TWILIO_ACCOUNT_SID || '',
+    authToken: process.env.TWILIO_AUTH_TOKEN || '',
+    fromNumber: process.env.TWILIO_FROM_NUMBER || '',
+    configured: Boolean(process.env.TWILIO_ACCOUNT_SID && process.env.TWILIO_AUTH_TOKEN && process.env.TWILIO_FROM_NUMBER)
+  }),
 
   TURN: Object.freeze({
     url: process.env.TURN_URL || '',

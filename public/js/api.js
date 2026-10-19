@@ -109,6 +109,8 @@ export const api = {
   // --- auth
   register: (payload) => request('/api/auth/register', { method: 'POST', body: payload }),
   login: (email, password) => request('/api/auth/login', { method: 'POST', body: { email, password } }),
+  forgotPassword: (email) => request('/api/auth/forgot-password', { method: 'POST', body: { email } }),
+  resetPassword: (token, password) => request('/api/auth/reset-password', { method: 'POST', body: { token, password } }),
   logout: () => request('/api/auth/logout', { method: 'POST' }),
   me: () => request('/api/auth/me'),
 
@@ -125,7 +127,12 @@ export const api = {
 
   // --- V1 identity
   completion: () => request('/api/users/me/completion'),
-  userByUsername: (username) => request(`/api/users/by-username/${encodeURIComponent(username)}`),
+  userByUsername: (username, source = 'direct') => {
+    const params = new URLSearchParams();
+    if (source && source !== 'direct') params.set('from', source);
+    const query = params.toString();
+    return request(`/api/users/by-username/${encodeURIComponent(username)}${query ? `?${query}` : ''}`);
+  },
   usernameClaimable: (username) =>
     request(`/api/users/me/username-available?username=${encodeURIComponent(username)}`),
   changeUsername: (username) => request('/api/users/me/username', { method: 'PATCH', body: { username } }),
@@ -217,9 +224,11 @@ export const api = {
   notificationPrefs: () => request('/api/notifications/prefs'),
   updateNotificationPrefs: (prefs) => request('/api/notifications/prefs', { method: 'PUT', body: prefs }),
 
-  // --- moderation (moderator/admin only; 404 for everyone else)
+  // --- moderation (server-enforced RBAC; 404 for roles without each permission)
   adminWhoami: () => request('/api/admin/whoami'),
   adminOverview: () => request('/api/admin/overview'),
+  adminHealth: () => request('/api/admin/health'),
+  adminSettings: () => request('/api/admin/settings'),
   adminReports: (params = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
@@ -228,6 +237,9 @@ export const api = {
   },
   adminReport: (id) => request(`/api/admin/reports/${id}`),
   adminResolveReport: (id, body) => request(`/api/admin/reports/${id}/resolve`, { method: 'POST', body }),
+  adminReportNotes: (id) => request(`/api/admin/reports/${id}/notes`),
+  adminAddReportNote: (id, note) => request(`/api/admin/reports/${id}/notes`, { method: 'POST', body: { note } }),
+  adminAssignReport: (id, assigneeId) => request(`/api/admin/reports/${id}/assign`, { method: 'POST', body: { assigneeId } }),
   adminUsers: (params = {}) => {
     const qs = new URLSearchParams(
       Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
@@ -246,6 +258,20 @@ export const api = {
     ).toString();
     return request(`/api/admin/audit${qs ? `?${qs}` : ''}`);
   },
+  adminActivity: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString();
+    return request(`/api/admin/activity${qs ? `?${qs}` : ''}`);
+  },
+  adminVerifications: (params = {}) => {
+    const qs = new URLSearchParams(
+      Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== '')
+    ).toString();
+    return request(`/api/admin/verifications${qs ? `?${qs}` : ''}`);
+  },
+  adminVerificationEvidenceUrl: (id) => `/api/admin/verifications/${id}/evidence`,
+  adminReviewVerification: (id, body) => request(`/api/admin/verifications/${id}/review`, { method: 'POST', body }),
 
   // --- attention lists
   likesYou: () => request('/api/discovery/likes-you'),
@@ -283,9 +309,10 @@ export const api = {
   // --- verification
   verificationStatus: () => request('/api/discovery/verification'),
   verificationChallenge: () => request('/api/discovery/verification/challenge'),
-  submitVerification: (gesture, blob) => {
+  submitVerification: (challenge, blob) => {
     const fd = new FormData();
-    fd.append('gesture', gesture);
+    fd.append('challengeId', challenge.challengeId);
+    fd.append('challengeToken', challenge.challengeToken);
     fd.append('photo', blob, 'selfie.jpg');
     return request('/api/discovery/verification', { method: 'POST', body: fd });
   },

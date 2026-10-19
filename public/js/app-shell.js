@@ -8,6 +8,7 @@ import { $, $$, el, toast, markActiveTab, setBadge, avatarSrc, escapeHtml, openM
 import { initI18n } from './i18n.js';
 import { initThemeToggle } from '/js/theme.js';
 import { initNotifications } from './notifications.js';
+import { safeReturnPath } from './navigation.js';
 
 export const session = {
   user: null,
@@ -59,7 +60,7 @@ export async function redirectIfAuthed(to = '/app') {
     const data = await api.me();
     if (data?.user) {
       const params = new URLSearchParams(location.search);
-      location.replace(params.get('next') || to);
+      location.replace(safeReturnPath(params.get('next'), to));
       return true;
     }
   } catch {

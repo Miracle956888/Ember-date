@@ -197,7 +197,8 @@ const viewer = await whoAmI();
 if (!viewer) $('[data-back-link]').setAttribute('href', '/login');
 
 try {
-  const { user } = await api.userByUsername(handle);
+  const source = new URLSearchParams(location.search).get('from') || 'direct';
+  const { user } = await api.userByUsername(handle, source);
   document.title = `${user.displayName} (@${user.username}) — Ember`;
   render(user, viewer);
 } catch (err) {
