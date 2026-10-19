@@ -10,12 +10,12 @@ Requirements: Node.js 20 or 22 and npm. From a clean checkout:
 
 ```bash
 npm ci
+npm run build:css
 npm run lint
 npm test
 npm run test:security
 npm audit --audit-level=high
 npm run deploy:check -- --offline
-npm run build:css
 ```
 
 `npm test` runs `scripts/dep-smoke.mjs`. It exercises the checked-in upload and
