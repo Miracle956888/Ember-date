@@ -1,19 +1,12 @@
 import mysql from 'mysql2/promise';
 import { env } from '../config/env.js';
+import { mysqlConnectionOptions } from './connection-options.js';
 import { logger } from '../utils/logger.js';
 
 const log = logger.child('db');
 
 export const pool = mysql.createPool({
-  host: env.DB.host,
-  port: env.DB.port,
-  user: env.DB.user,
-  password: env.DB.password,
-  database: env.DB.database,
-  socketPath: env.DB.socketPath,
-  // undefined unless DB_SSL is set - see dbSsl() in config/env.js for the shape.
-  // TiDB Cloud Serverless and Aiven MySQL reject a plaintext connection at all.
-  ssl: env.DB.ssl,
+  ...mysqlConnectionOptions(),
   waitForConnections: true,
   connectionLimit: env.DB.connectionLimit,
   maxIdle: env.DB.connectionLimit,

@@ -160,8 +160,10 @@ except the database credentials.
 | `TRUST_PROXY`                                 | off (on in prod)        | Read `X-Forwarded-*` behind a proxy: real client IPs for rate limiting, and `req.secure` |
 | `FORCE_HTTPS`                                 | off                     | 301/308 upgrade to https behind that proxy. Needs `TRUST_PROXY`, or it refuses to start rather than loop |
 | `EXTRA_ORIGINS`                               | empty                   | Additional CORS-allowed origins, comma separated              |
-| `DB_SSL`                                      | off                     | `true` for TLS to the database. **Required** by TiDB Cloud Serverless and Aiven free MySQL |
-| `DB_SSL_CA` / `DB_SSL_REJECT_UNAUTHORIZED`     | unset / `true`          | Provider CA bundle path, and whether to verify the certificate  |
+| `DB_SSL`                                      | off                     | `true` for TLS to any managed/public database; required for Aiven |
+| `DB_SSL_CA_BASE64`                            | unset                   | Base64-encoded provider CA PEM; recommended for Render/Aiven and required for `*.aivencloud.com` hosts |
+| `DB_SSL_CA`                                    | unset                   | PEM CA file path inside the running container; the file must exist there |
+| `DB_SSL_REJECT_UNAUTHORIZED`                  | unsupported             | Chain and hostname verification are always enforced; a `false` value fails startup |
 | `DB_POOL_SIZE` / `DB_SOCKET`                    | `10` / unset            | Connection pool size, or a unix socket instead of TCP          |
 | `CLEANUP_CRON`                                  | `*/5 * * * *`           | How often expired rows are actually deleted                    |
 | `LOG_LEVEL`                                     | `info` in prod          | `debug` in development                                         |

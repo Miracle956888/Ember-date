@@ -18,6 +18,7 @@ import { fileURLToPath } from 'node:url';
 import crypto from 'node:crypto';
 import mysql from 'mysql2/promise';
 import { env, ROOT_DIR } from '../server/src/config/env.js';
+import { mysqlConnectionOptions } from '../server/src/db/connection-options.js';
 
 const MIGRATION_DIR = path.join(ROOT_DIR, 'db', 'migrations');
 const MIGRATION_TABLE = 'schema_migrations';
@@ -272,12 +273,7 @@ async function main() {
   if (FRESH) await assertDestructiveResetAllowed(database);
 
   const conn = await mysql.createConnection({
-    host: env.DB.host,
-    port: env.DB.port,
-    user: env.DB.user,
-    password: env.DB.password,
-    socketPath: env.DB.socketPath,
-    ssl: env.DB.ssl,
+    ...mysqlConnectionOptions({ includeDatabase: false }),
     multipleStatements: false
   });
   let lockAcquired = false;

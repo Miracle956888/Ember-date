@@ -153,7 +153,7 @@ file outside version control). Do not put real values in `render.yaml`,
 | `NODE_ENV` | `production` |
 | `APP_ORIGIN` | Exact public HTTPS origin; no path |
 | `DB_HOST`, `DB_PORT`, `DB_NAME`, `DB_USER`, `DB_PASSWORD` | Reachable MySQL 8 / supported MariaDB account with least-privilege permissions |
-| `DB_SSL`, `DB_SSL_CA`, `DB_SSL_REJECT_UNAUTHORIZED` | Enable and verify TLS for managed/remote DB; never disable certificate verification casually |
+| `DB_SSL`, `DB_SSL_CA_BASE64`, `DB_SSL_CA` | Enable TLS and load the managed DB's trusted CA; Aiven hosts require the project CA and always retain chain/hostname verification |
 | `JWT_ACCESS_SECRET`, `JWT_REFRESH_SECRET` | Separate, high-entropy values of at least 32 characters; store persistently |
 | `TRUST_PROXY`, `FORCE_HTTPS` | Set consistently with the trusted TLS proxy; test redirects and secure cookies |
 | `UPLOAD_DIR` | Private persistent volume, outside `public/`; back up separately |
@@ -161,6 +161,31 @@ file outside version control). Do not put real values in `render.yaml`,
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | All three required for phone-verification SMS |
 | `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` | Required for reliable calls across strict NATs; otherwise calls may be limited to direct paths |
 | `MESSAGE_TTL_HOURS`, `CLEANUP_CRON` | Review the retention contract and ensure cleanup runs continuously |
+
+### Aiven MySQL TLS on Render
+
+For an Aiven connection error such as `self-signed certificate in certificate chain`, configure the Aiven **project CA** rather than turning certificate checks off:
+
+1. In Aiven, open **Project → Services → your MySQL service → Overview → Connection information** and download the **CA certificate** as a PEM file. Use the host and port shown for that service.
+2. In the Render Blueprint prompts or the service's **Environment** settings, set `DB_SSL=true` and add `DB_SSL_CA_BASE64` as a secret environment variable. The checked-in `render.yaml` declares this variable with `sync: false` so the certificate value is not committed.
+3. Base64-encode the **entire PEM file**, including its `BEGIN CERTIFICATE` and `END CERTIFICATE` lines. On macOS/Linux, run:
+
+   ```sh
+   base64 < aiven-ca.pem | tr -d '\r\n'
+   ```
+
+   In PowerShell, run:
+
+   ```powershell
+   [Convert]::ToBase64String([IO.File]::ReadAllBytes("aiven-ca.pem"))
+   ```
+
+   Copy the resulting single-line value into Render as `DB_SSL_CA_BASE64`. Do not add literal `\n` escapes, PEM quotes, or the local file path. The app decodes the value, validates the X.509 CA PEM, and passes the CA to `mysql2`.
+4. Keep `DB_SSL_REJECT_UNAUTHORIZED` unset. The app rejects attempts to set it to `false`; the driver always uses `rejectUnauthorized: true` and `verifyIdentity: true`, so it verifies both the CA chain and the server name from `DB_HOST`.
+5. Save the environment and redeploy. If you prefer a file instead, mount the PEM using Render's protected Secret Files and set `DB_SSL_CA` to the exact absolute path inside the container. A path on your computer does not exist inside Render; startup deliberately fails if the mounted file is missing.
+6. From the Render Shell, run `npm run db:ping`. This uses the same `mysql2` TLS config and performs only a ping plus `SELECT VERSION()`; it does not run migrations or modify rows. Then inspect the deploy logs and open `/api/health` on the service URL. The app itself runs migrations at startup, so test against a restored staging database before pointing it at production.
+
+Never paste the database password or CA value into tickets or chat. Keep a database backup and test a restore before production migrations.
 
 Queued reset/verification payloads use AES-GCM with a key derived from
 `JWT_REFRESH_SECRET`. Keep that secret stable. Before rotating it, drain or

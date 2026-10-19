@@ -38,7 +38,7 @@ COPY server ./server
 COPY db ./db
 COPY public ./public
 # Include only the two operator tools required in a production container.
-COPY scripts/bootstrap-admin.mjs scripts/deploy-check.mjs ./scripts/
+COPY scripts/bootstrap-admin.mjs scripts/deploy-check.mjs scripts/db-ping.mjs ./scripts/
 # The stylesheet built in stage 1 replaces whatever was copied above.
 COPY --from=builder /app/public/css/app.css ./public/css/app.css
 

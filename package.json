@@ -16,6 +16,7 @@
     "build": "npm run build:css",
     "start": "node server/server.js",
     "db:migrate": "node db/migrate.js",
+    "db:ping": "node scripts/db-ping.mjs",
     "db:seed": "node db/seed.js",
     "db:reset": "node db/migrate.js --fresh && node db/seed.js",
     "admin:bootstrap": "node scripts/bootstrap-admin.mjs",

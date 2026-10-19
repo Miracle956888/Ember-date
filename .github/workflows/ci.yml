@@ -185,6 +185,9 @@ jobs:
           node db/migrate.js >/dev/null
           echo "checksum mismatch refused; original checksum restored"
 
+      - name: Verify the read-only DB ping command
+        run: npm run db:ping
+
       - name: Boot with seeded data and verify every route, asset and guard
         # One step: GitHub tears the process tree down between steps, so the server
         # has to start, be poked and be shut down inside the same shell.

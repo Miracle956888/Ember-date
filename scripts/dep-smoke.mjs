@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import http from 'node:http';
 import os from 'node:os';
 import path from 'node:path';
+import tls from 'node:tls';
 import { spawnSync } from 'node:child_process';
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
@@ -448,6 +449,7 @@ function probeEnv(extra, expr) {
       APP_ORIGIN: 'http://localhost:3000',
       DB_SSL: '',
       DB_SSL_CA: '',
+      DB_SSL_CA_BASE64: '',
       DB_SSL_REJECT_UNAUTHORIZED: '',
       ...extra
     }
@@ -456,25 +458,82 @@ function probeEnv(extra, expr) {
 }
 const SSL_EXPR = "import('./server/src/config/env.js').then(m=>console.log(JSON.stringify(m.env.DB.ssl ?? null)),e=>{console.log('THREW:'+e.message)})";
 const sslOff = probeEnv({}, SSL_EXPR);
-check(sslOff.out === 'null', `DB_SSL unset leaves TLS off for the compose database (${sslOff.out})`);
+check(sslOff.out === 'null', `DB_SSL unset leaves TLS off for the private compose database (${sslOff.out})`);
 const sslOn = probeEnv({ DB_SSL: 'true' }, SSL_EXPR);
-check(sslOn.out === '{"rejectUnauthorized":true}', `DB_SSL=true verifies the certificate chain (${sslOn.out})`);
+const sslOnOptions = JSON.parse(sslOn.out);
+check(sslOnOptions.rejectUnauthorized === true && sslOnOptions.verifyIdentity === true, 'DB_SSL=true verifies the chain and database hostname');
 const sslNoVerify = probeEnv({ DB_SSL: '1', DB_SSL_REJECT_UNAUTHORIZED: 'false' }, SSL_EXPR);
-check(sslNoVerify.out === '{"rejectUnauthorized":false}', `rejectUnauthorized=false is honoured when a provider gives no CA (${sslNoVerify.out})`);
-const caFile = path.join(tmpUploads, 'smoke-ca.pem');
-fs.writeFileSync(caFile, '-----BEGIN CERTIFICATE-----\nMIIB\n-----END CERTIFICATE-----\n');
-const sslCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: caFile }, SSL_EXPR);
-check(/"ca":\[\{/.test(sslCa.out) && sslCa.out.includes('rejectUnauthorized'), `DB_SSL_CA loads the bundle and still verifies (${sslCa.out.slice(0, 60)})`);
-const sslMissingCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: '/definitely/not/here.pem' }, SSL_EXPR);
-check(/THREW:.*does not exist/.test(sslMissingCa.out + sslMissingCa.err), 'a bad DB_SSL_CA path is a startup error, not a silent no-TLS fallback');
+check(/THREW:.*Certificate verification cannot be disabled/.test(sslNoVerify.out + sslNoVerify.err), 'an insecure certificate-verification override is rejected');
 
-// The driver must actually receive it, or all of the above is decoration.
+// Use a public root from Node's trust store as a valid, non-secret CA fixture.
+const testCaPem = tls.rootCertificates[0];
+const testCaBase64 = Buffer.from(testCaPem, 'utf8').toString('base64');
+const caFile = path.join(tmpUploads, 'smoke-ca.pem');
+fs.writeFileSync(caFile, testCaPem);
+const sslCaFile = probeEnv({ DB_SSL: 'true', DB_SSL_CA: caFile }, SSL_EXPR);
+const sslCaFileOptions = JSON.parse(sslCaFile.out);
+check(
+  sslCaFileOptions.rejectUnauthorized === true && sslCaFileOptions.verifyIdentity === true && sslCaFileOptions.ca?.length === 1,
+  'DB_SSL_CA loads an in-runtime PEM certificate while retaining chain and identity verification'
+);
+const sslCaBase64 = probeEnv({ DB_SSL: 'true', DB_SSL_CA_BASE64: testCaBase64 }, SSL_EXPR);
+const sslCaBase64Options = JSON.parse(sslCaBase64.out);
+const decodedCa = Buffer.from(sslCaBase64Options.ca?.[0]?.data || []);
+check(
+  sslCaBase64Options.rejectUnauthorized === true && sslCaBase64Options.verifyIdentity === true && decodedCa.equals(Buffer.from(`${testCaPem}\n`)),
+  'DB_SSL_CA_BASE64 decodes the PEM bundle without weakening TLS verification'
+);
+const sslMissingCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: '/definitely/not/here.pem' }, SSL_EXPR);
+check(/THREW:.*does not exist inside this runtime/.test(sslMissingCa.out + sslMissingCa.err), 'a missing mounted CA file fails startup instead of silently falling back');
+const sslBadCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA_BASE64: Buffer.from('not a certificate').toString('base64') }, SSL_EXPR);
+check(/THREW:.*PEM-encoded CA certificates/.test(sslBadCa.out + sslBadCa.err), 'invalid certificate data is rejected before opening a connection');
+const sslBothCa = probeEnv({ DB_SSL: 'true', DB_SSL_CA: caFile, DB_SSL_CA_BASE64: testCaBase64 }, SSL_EXPR);
+check(/THREW:.*Set only one/.test(sslBothCa.out + sslBothCa.err), 'ambiguous CA sources fail fast');
+const aivenNoTls = probeEnv({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'false' }, SSL_EXPR);
+check(/THREW:.*Aiven MySQL requires DB_SSL=true/.test(aivenNoTls.out + aivenNoTls.err), 'Aiven hosts cannot start without TLS');
+const aivenNoCa = probeEnv({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true' }, SSL_EXPR);
+check(/THREW:.*Aiven MySQL requires its project CA/.test(aivenNoCa.out + aivenNoCa.err), 'Aiven hosts require their project CA');
+const aivenGood = probeEnv({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true', DB_SSL_CA_BASE64: testCaBase64 }, SSL_EXPR);
+check(JSON.parse(aivenGood.out).verifyIdentity === true, 'Aiven TLS configuration loads when its project CA is supplied');
+
+// Both the app pool and migration runner use the shared settings helper. Inspect
+// mysql2's resolved config without opening a network connection.
 const sslToDriver = spawnSync(
   process.execPath,
-  ['-e', "process.env.DB_SSL='true';process.env.DB_SSL_REJECT_UNAUTHORIZED='false';import('./server/src/db/pool.js').then(({pool})=>{const c=pool.pool.config.connectionConfig;console.log(JSON.stringify({ssl:!!c.ssl,rej:c.ssl.rejectUnauthorized}));return pool.end()})"],
-  { cwd: ROOT, encoding: 'utf8', env: { ...process.env, DB_HOST: 'h', DB_PORT: '3306', DB_USER: 'u', DB_NAME: 'd', APP_ORIGIN: 'http://localhost:3000' } }
+  [
+    '-e',
+    "Promise.all([import('./server/src/db/pool.js'),import('./server/src/db/connection-options.js')]).then(async ([{pool},{mysqlConnectionOptions}])=>{const app=pool.pool.config.connectionConfig;const migration=mysqlConnectionOptions({includeDatabase:false});console.log(JSON.stringify({appTls:{rejectUnauthorized:app.ssl.rejectUnauthorized,verifyIdentity:app.ssl.verifyIdentity,caCount:app.ssl.ca.length},sameHost:app.host===migration.host,samePort:app.port===migration.port,sameUser:app.user===migration.user,sameTls:app.ssl.ca[0].equals(migration.ssl.ca[0]),appHasDatabase:Boolean(app.database),migrationHasDatabase:Object.hasOwn(migration,'database')}));await pool.end()}).catch(e=>console.log('THREW:'+e.message))"
+  ],
+  {
+    cwd: ROOT,
+    encoding: 'utf8',
+    env: {
+      ...process.env,
+      DB_HOST: 'mysql-test.aivencloud.com',
+      DB_PORT: '3306',
+      DB_USER: 'u',
+      DB_NAME: 'd',
+      APP_ORIGIN: 'http://localhost:3000',
+      DB_SSL: 'true',
+      DB_SSL_CA: '',
+      DB_SSL_CA_BASE64: testCaBase64,
+      DB_SSL_REJECT_UNAUTHORIZED: ''
+    }
+  }
 );
-check(/"ssl":true,"rej":false/.test(sslToDriver.stdout), `mysql2 receives the ssl config (${sslToDriver.stdout.trim() || sslToDriver.stderr.slice(0, 80)})`);
+const driverOptions = JSON.parse(sslToDriver.stdout.trim().split('\n').pop());
+check(
+  driverOptions.appTls?.rejectUnauthorized === true &&
+    driverOptions.appTls?.verifyIdentity === true &&
+    driverOptions.appTls?.caCount === 1 &&
+    driverOptions.sameHost && driverOptions.samePort && driverOptions.sameUser &&
+    driverOptions.sameTls && driverOptions.appHasDatabase && !driverOptions.migrationHasDatabase,
+  `mysql2 app and migration settings share verified TLS (${sslToDriver.stdout.trim() || sslToDriver.stderr.slice(0, 120)})`
+);
+const migrationSource = fs.readFileSync(path.join(ROOT, 'db', 'migrate.js'), 'utf8');
+const poolSource = fs.readFileSync(path.join(ROOT, 'server', 'src', 'db', 'pool.js'), 'utf8');
+check(migrationSource.includes('...mysqlConnectionOptions({ includeDatabase: false })'), 'migration runner uses the shared MySQL connection settings');
+check(poolSource.includes('...mysqlConnectionOptions()'), 'web server pool uses the shared MySQL connection settings');
 
 function runCheck(envOverrides) {
   const r = spawnSync(process.execPath, [path.join(ROOT, 'scripts', 'deploy-check.mjs'), '--offline'], {
@@ -485,9 +544,14 @@ function runCheck(envOverrides) {
       ...process.env,
       NODE_ENV: 'production',
       DB_HOST: 'db.internal',
+      DB_PORT: '3306',
       DB_USER: 'ember',
       DB_NAME: 'ember',
       DB_PASSWORD: 'a-real-password-here',
+      DB_SSL: '',
+      DB_SSL_CA: '',
+      DB_SSL_CA_BASE64: '',
+      DB_SSL_REJECT_UNAUTHORIZED: '',
       // Deliberately not 'aaaa...': the checker rejects single-character repeats as
       // placeholders, so the "sane config" fixture has to look like a real secret.
       JWT_ACCESS_SECRET: '0f3a9c7b1e5d8a2c4b6f0d1e2c3a4b5c6d7e8f90',
@@ -503,6 +567,10 @@ function runCheck(envOverrides) {
 }
 const goodCfg = runCheck({ DB_SSL: 'true' });
 check(goodCfg.status === 0, `deploy-check passes a sane production config (exit ${goodCfg.status})`, goodCfg.out.split('\n').filter((l) => /FAIL/.test(l)).join('\n'));
+const aivenMissingCaCheck = runCheck({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true' });
+check(aivenMissingCaCheck.status === 1 && /Aiven MySQL requires its project CA/.test(aivenMissingCaCheck.out), 'deploy preflight blocks Aiven without its project CA');
+const aivenCaCheck = runCheck({ DB_HOST: 'mysql-test.aivencloud.com', DB_SSL: 'true', DB_SSL_CA_BASE64: testCaBase64 });
+check(aivenCaCheck.status === 0 && /provider CA loaded/.test(aivenCaCheck.out), 'offline deploy preflight accepts verified Aiven CA configuration');
 const httpOrigin = runCheck({ APP_ORIGIN: 'http://ember.example.com' });
 check(httpOrigin.status === 1 && /APP_ORIGIN/.test(httpOrigin.out), 'deploy-check fails an http origin in production');
 const plainRemoteDb = runCheck({ DB_HOST: 'gateway.prod.tidbcloud.com', DB_SSL: 'false' });
@@ -580,7 +648,10 @@ check(freshGuardUnconfirmed.status === 1 && /--fresh refused/.test(`${freshGuard
 
 const dockerfile = fs.readFileSync(path.join(ROOT, 'Dockerfile'), 'utf8');
 check(/CMD \["sh", "-c", "node db\/migrate\.js --if-needed && exec node server\/server\.js"\]/.test(dockerfile), 'Dockerfile applies pending migrations before starting the server');
-check(/COPY scripts\/bootstrap-admin\.mjs scripts\/deploy-check\.mjs \.\/scripts\//.test(dockerfile), 'production image includes the guarded admin bootstrap and live deploy-check tools');
+check(/COPY scripts\/bootstrap-admin\.mjs scripts\/deploy-check\.mjs scripts\/db-ping\.mjs \.\/scripts\//.test(dockerfile), 'production image includes admin, deploy-check, and read-only DB ping tools');
+const packageScripts = JSON.parse(fs.readFileSync(path.join(ROOT, 'package.json'), 'utf8')).scripts;
+const dbPingSource = fs.readFileSync(path.join(ROOT, 'scripts', 'db-ping.mjs'), 'utf8');
+check(packageScripts['db:ping'] === 'node scripts/db-ping.mjs' && dbPingSource.includes('assertDbConnection'), 'db:ping provides a read-only connection check using the application pool');
 const composeRaw = fs.readFileSync(path.join(ROOT, 'docker-compose.yml'), 'utf8');
 check(composeRaw.includes('node db/migrate.js --if-needed && exec node server/server.js'), 'compose start command matches the image');
 const renderYml = fs.readFileSync(path.join(ROOT, 'render.yaml'), 'utf8');
@@ -635,9 +706,12 @@ for (const { f, doc } of workflows) {
   check(svc.healthCheckPath === '/api/health', 'Render health-checks the one path forceHttps() exempts');
   check(svc.plan && svc.plan !== 'free', `plan is ${svc.plan}: the free instance sleeps, which drops every socket and stops the expiry cron`);
   check(svc.disk?.mountPath === env.UPLOAD_DIR?.value, `the persistent disk is mounted where UPLOAD_DIR writes (${svc.disk?.mountPath})`);
-  const secretish = ['DB_PASSWORD', 'DB_USER', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'TURN_CREDENTIAL', 'TURN_USERNAME'];
+  check(env.DB_SSL?.value === 'true', 'Render enables verified TLS for the managed database');
+  check(env.DB_SSL_CA_BASE64?.sync === false, 'the Aiven project CA is supplied as a private Render environment value, not committed');
+  check(!env.DB_SSL_REJECT_UNAUTHORIZED, 'Render does not expose an insecure TLS-verification override');
+  const secretish = ['DB_PASSWORD', 'DB_USER', 'DB_HOST', 'DB_PORT', 'DB_NAME', 'DB_SSL_CA_BASE64', 'JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET', 'TURN_CREDENTIAL', 'TURN_USERNAME'];
   const hardcoded = secretish.filter((k) => env[k] && env[k].value !== undefined);
-  check(hardcoded.length === 0, 'no database credential is hardcoded in render.yaml', hardcoded.length ? 'hardcoded: ' + hardcoded.join(', ') : 'every one is prompted (sync: false) or generated');
+  check(hardcoded.length === 0, 'no database credential or CA certificate is hardcoded in render.yaml', hardcoded.length ? 'hardcoded: ' + hardcoded.join(', ') : 'every value is prompted (sync: false) or generated');
   const jwt = ['JWT_ACCESS_SECRET', 'JWT_REFRESH_SECRET'].filter((k) => env[k]?.generateValue === true);
   check(jwt.length === 2, 'both JWT secrets are generated by Render (generateValue: true), not pasted into the repo');
   // Comments explain the choices; only the live YAML can break a deploy.
