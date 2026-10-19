@@ -14,8 +14,8 @@
  *    though the row is still on disk waiting for the cleanup sweep, so a slow
  *    or failed cron can never leak content past its lifetime.
  * 2. **Deletion is soft then hard.** `deleted_at` makes it instantly
- *    unreachable; the cleanup job unlinks the bytes. The owner never waits for
- *    the sweep to see it gone.
+ *    unreachable; file keys enter the durable outbox in the same transaction,
+ *    then an immediate attempt and the worker retry storage removal.
  * 3. **Blocks are enforced in SQL, both directions.** A blocked user does not
  *    appear in the feed, cannot view, cannot react and cannot reply — and the
  *    responses are 404, never 403, so a block is never confirmable.
@@ -27,13 +27,10 @@
  * because replying opens a private conversation.
  */
 import { query, queryOne, execute, withTransaction } from '../db/pool.js';
+import { MEDIA_DELETE_REASON, enqueueMediaDeletion, removeQueuedMedia } from './media-deletion.service.js';
 import { badRequest, notFound, forbidden, conflict } from '../utils/errors.js';
-import { storage } from './storage.service.js';
 import * as notificationService from './notification.service.js';
 import { sanitizeText } from '../utils/validators.js';
-import logger from '../utils/logger.js';
-
-const log = logger.child('moments');
 
 /** Moments always live exactly 24 hours. This is the product promise. */
 export const MOMENT_TTL_HOURS = 24;
@@ -127,41 +124,70 @@ export async function createMoment(userId, { kind, body, media, background }) {
   const clean = body ? sanitizeText(body).slice(0, 500) : null;
 
   if (kind === 'text') {
+    if (media?.uploadId) throw badRequest('Text moments cannot include a photo or video upload.');
     if (!clean) throw badRequest('Write something for your moment.');
     if (background && !MOMENT_BACKGROUNDS.includes(background)) {
       throw badRequest('Unknown background.');
     }
-  } else if (!media?.fileKey) {
+  } else if (!media?.uploadId) {
     throw badRequest('Attach a photo or video.');
   }
 
-  // Volume cap: cheap, and the only thing standing between us and a feed
-  // flooded by one account.
-  const recent = await queryOne(
-    'SELECT COUNT(*) AS n FROM moments WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)',
-    [userId]
-  );
-  if (Number(recent?.n || 0) >= MAX_PER_DAY) {
-    throw conflict(`You can share up to ${MAX_PER_DAY} moments a day. Try again a little later.`);
-  }
+  // Serialize the daily limit and consume the upload handle atomically. A
+  // client cannot claim another user's file by inventing storage keys.
+  const momentId = await withTransaction(async (conn) => {
+    const [owners] = await conn.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+    if (!owners.length) throw notFound('Account not found.');
+    const [recent] = await conn.execute(
+      'SELECT COUNT(*) AS n FROM moments WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)',
+      [userId]
+    );
+    if (Number(recent[0]?.n || 0) >= MAX_PER_DAY) {
+      throw conflict(`You can share up to ${MAX_PER_DAY} moments a day. Try again a little later.`);
+    }
 
-  const res = await execute(
-    `INSERT INTO moments (user_id, kind, body, media_url, thumb_url, media_key, thumb_key, background, expires_at)
-     VALUES (?,?,?,?,?,?,?,?, DATE_ADD(NOW(), INTERVAL ? HOUR))`,
-    [
-      userId,
-      kind,
-      clean,
-      media?.url || null,
-      media?.thumbUrl || null,
-      media?.fileKey || null,
-      media?.thumbKey || null,
-      kind === 'text' ? background || 'ember' : null,
-      MOMENT_TTL_HOURS
-    ]
-  );
+    let upload = null;
+    if (kind !== 'text') {
+      const [uploads] = await conn.execute(
+        `SELECT upload_id, kind, file_key, thumb_key, media_url, thumb_url
+           FROM pending_social_uploads
+          WHERE upload_id = ? AND owner_id = ? AND expires_at > NOW()
+          LIMIT 1 FOR UPDATE`,
+        [media.uploadId, userId]
+      );
+      upload = uploads[0];
+      if (!upload || upload.kind !== kind) {
+        throw badRequest('That upload expired or is not available to this account. Choose the file again.');
+      }
+    }
 
-  return getMoment(Number(res.insertId), userId);
+    const [inserted] = await conn.execute(
+      `INSERT INTO moments (user_id, kind, body, media_url, thumb_url, media_key, thumb_key, background, expires_at)
+       VALUES (?,?,?,?,?,?,?,?, DATE_ADD(NOW(), INTERVAL ? HOUR))`,
+      [
+        userId,
+        kind,
+        clean,
+        upload?.media_url || null,
+        upload?.thumb_url || null,
+        upload?.file_key || null,
+        upload?.thumb_key || null,
+        kind === 'text' ? background || 'ember' : null,
+        MOMENT_TTL_HOURS
+      ]
+    );
+
+    if (upload) {
+      const [consumed] = await conn.execute(
+        'DELETE FROM pending_social_uploads WHERE upload_id = ? AND owner_id = ?',
+        [upload.upload_id, userId]
+      );
+      if (consumed.affectedRows !== 1) throw badRequest('That upload was already used. Choose the file again.');
+    }
+    return Number(inserted.insertId);
+  });
+
+  return getMoment(momentId, userId);
 }
 
 /** A single Moment, expiry- and block-checked. */
@@ -393,35 +419,34 @@ export async function replyToMoment(momentId, senderId, text) {
 }
 
 /**
- * Delete. Soft-deletes immediately so it vanishes from every read path, and
- * returns the storage keys so the caller can unlink the bytes right away
- * instead of waiting for the sweep. `deletedBy` records moderator deletions.
+ * Delete. Soft-deletes and queues media atomically so it vanishes from every
+ * read path before the outbox's immediate unlink attempt. `deletedBy` records
+ * moderator deletions.
  */
 export async function deleteMoment(momentId, userId, { asModerator = false } = {}) {
-  const row = await queryOne(
-    'SELECT id, user_id, media_key, thumb_key FROM moments WHERE id = ? AND deleted_at IS NULL LIMIT 1',
-    [momentId]
-  );
-  if (!row) throw notFound('That moment is no longer available.');
-  if (!asModerator && Number(row.user_id) !== Number(userId)) {
-    throw forbidden('That moment is not yours.');
-  }
-
-  await execute('UPDATE moments SET deleted_at = NOW(), deleted_by = ? WHERE id = ?', [userId, momentId]);
-  await notificationService.unnotify(`moment_reaction:moment:${momentId}`);
-
-  const keys = [row.media_key, row.thumb_key].filter(Boolean);
-  for (const key of keys) {
-    try {
-      await storage.remove(key);
-    } catch (err) {
-      // The row is already unreachable; a missing file is not an error worth
-      // failing the request over. The sweep will retry.
-      log.warn('media unlink failed', { key, error: err.message });
+  const result = await withTransaction(async (conn) => {
+    const [rows] = await conn.execute(
+      'SELECT id, user_id, media_key, thumb_key FROM moments WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE',
+      [momentId]
+    );
+    const row = rows[0];
+    if (!row) throw notFound('That moment is no longer available.');
+    if (!asModerator && Number(row.user_id) !== Number(userId)) {
+      throw forbidden('That moment is not yours.');
     }
-  }
-
-  return { deleted: true, id: momentId, filesRemoved: keys.length };
+    const keys = [row.media_key, row.thumb_key].filter(Boolean);
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+    await conn.execute('UPDATE moments SET deleted_at = NOW(), deleted_by = ? WHERE id = ?', [userId, momentId]);
+    return { keys };
+  });
+  await notificationService.unnotify(`moment_reaction:moment:${momentId}`);
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+  return {
+    deleted: true,
+    id: momentId,
+    filesRemoved: removed.deletedFiles,
+    filesPending: removed.failedFiles
+  };
 }
 
 /**
@@ -429,34 +454,41 @@ export async function deleteMoment(momentId, userId, { asModerator = false } = {
  * job — LAYER 3 of the ephemerality rule for the social layer.
  */
 export async function purgeExpired({ limit = 2000 } = {}) {
-  const rows = await query(
-    `SELECT id, media_key, thumb_key FROM moments
+  const max = Math.max(1, Math.min(5000, Number.parseInt(limit, 10) || 2000));
+  const candidates = await query(
+    `SELECT id FROM moments
       WHERE expires_at <= NOW() OR deleted_at IS NOT NULL
-      LIMIT ?`,
-    [limit]
+      ORDER BY id LIMIT ?`,
+    [max]
   );
-  if (!rows.length) return { moments: 0, files: 0 };
+  if (!candidates.length) return { moments: 0, files: 0, missingFiles: 0, failedFiles: 0 };
 
-  let files = 0;
-  for (const row of rows) {
-    for (const key of [row.media_key, row.thumb_key].filter(Boolean)) {
-      try {
-        if (await storage.remove(key)) files += 1;
-      } catch {
-        /* already gone */
-      }
-    }
-  }
-
-  const ids = rows.map((r) => Number(r.id));
-  const placeholders = ids.map(() => '?').join(',');
-  // views + reactions cascade with the row.
-  const res = await withTransaction(async (conn) => {
-    const [out] = await conn.execute(`DELETE FROM moments WHERE id IN (${placeholders})`, ids);
-    return out;
+  const candidateIds = candidates.map((row) => Number(row.id));
+  const placeholders = candidateIds.map(() => '?').join(',');
+  const result = await withTransaction(async (conn) => {
+    const [rows] = await conn.execute(
+      `SELECT id, media_key, thumb_key FROM moments
+        WHERE id IN (${placeholders}) AND (expires_at <= NOW() OR deleted_at IS NOT NULL)
+        FOR UPDATE`,
+      candidateIds
+    );
+    if (!rows.length) return { deleted: 0, keys: [] };
+    const keys = rows.flatMap((row) => [row.media_key, row.thumb_key].filter(Boolean));
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+    const ids = rows.map((row) => Number(row.id));
+    const rowPlaceholders = ids.map(() => '?').join(',');
+    // views + reactions cascade with the row.
+    const [deleted] = await conn.execute(`DELETE FROM moments WHERE id IN (${rowPlaceholders})`, ids);
+    return { deleted: deleted.affectedRows, keys };
   });
 
-  return { moments: res.affectedRows, files };
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+  return {
+    moments: result.deleted,
+    files: removed.deletedFiles,
+    missingFiles: removed.missingFiles,
+    failedFiles: removed.failedFiles
+  };
 }
 
 /**

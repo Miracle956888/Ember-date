@@ -4,6 +4,7 @@
  * invisible the instant it lapses - never trusting the cleanup job alone.
  */
 import { query, queryOne, execute, withTransaction } from '../db/pool.js';
+import { MEDIA_DELETE_REASON, enqueueMediaDeletion, removeQueuedMedia } from './media-deletion.service.js';
 import { notFound, badRequest, forbidden } from '../utils/errors.js';
 import { assertParticipant } from './match.service.js';
 import { attachLocationToMessage, locationsForMessages } from './location.service.js';
@@ -291,19 +292,17 @@ export async function markRead(conversationId, userId) {
 export async function clearConversation(conversationId, userId) {
   const part = await assertParticipant(conversationId, userId);
 
-  const files = await query(
-    `SELECT a.id, a.file_path, a.thumb_path
-       FROM attachments a
-       JOIN messages msg ON msg.id = a.message_id
-      WHERE msg.conversation_id = ?`,
-    [conversationId]
-  );
-
-  // Soft-expire rather than hard-delete: back-dating expires_at makes the rows
-  // invisible to every read query (they all filter `expires_at > NOW()`) and
-  // hands the row + file removal to the same cleanup job that handles the 24h
-  // purge. One deletion path, so a cleared chat cannot leave orphaned files.
+  // Expiry makes every message invisible immediately. In the same transaction,
+  // record attachment deletions before changing any ownership/retention rows.
   const result = await withTransaction(async (conn) => {
+    const [files] = await conn.execute(
+      `SELECT a.file_path, a.thumb_path
+         FROM attachments a JOIN messages msg ON msg.id = a.message_id
+        WHERE msg.conversation_id = ? FOR UPDATE`,
+      [conversationId]
+    );
+    const keys = files.flatMap((file) => [file.file_path, file.thumb_path].filter(Boolean));
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
     const [attRes] = await conn.execute(
       `UPDATE attachments a
          JOIN messages msg ON msg.id = a.message_id
@@ -316,14 +315,15 @@ export async function clearConversation(conversationId, userId) {
       [conversationId]
     );
     await conn.execute('UPDATE conversations SET last_message_at = NULL WHERE id = ?', [conversationId]);
-    return { messages: msgRes.affectedRows, attachments: attRes.affectedRows };
+    return { messages: msgRes.affectedRows, attachments: attRes.affectedRows, keys };
   });
 
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
   return {
     deletedMessages: result.messages,
     deletedAttachments: result.attachments,
-    // The cleanup job unlinks these on its next pass; callers may purge sooner.
-    files: files.map((f) => ({ filePath: f.file_path, thumbPath: f.thumb_path })),
+    deletedFiles: removed.deletedFiles,
+    pendingFiles: removed.failedFiles,
     participants: part
   };
 }

@@ -25,14 +25,11 @@
  *   counter rather than adding one, enforced by UNIQUE (post_id, user_id).
  */
 import { query, queryOne, execute, withTransaction } from '../db/pool.js';
+import { MEDIA_DELETE_REASON, enqueueMediaDeletion, removeQueuedMedia } from './media-deletion.service.js';
 import { badRequest, notFound, forbidden, conflict } from '../utils/errors.js';
-import { storage } from './storage.service.js';
 import * as notificationService from './notification.service.js';
 import * as likeService from './like.service.js';
 import { sanitizeText } from '../utils/validators.js';
-import logger from '../utils/logger.js';
-
-const log = logger.child('posts');
 
 /** Posts live 24 hours, same promise as Moments. */
 export const POST_TTL_HOURS = 24;
@@ -210,29 +207,61 @@ export async function createPost(userId, { body, media = [], poll = null }) {
     pollOptions = labels;
   }
 
-  const recent = await queryOne(
-    'SELECT COUNT(*) AS n FROM posts WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)',
-    [userId]
-  );
-  if (Number(recent?.n || 0) >= MAX_PER_DAY) {
-    throw conflict(`You can share up to ${MAX_PER_DAY} posts a day. Try again a little later.`);
-  }
+  const uploadIds = media.map((item) => item.uploadId);
+  if (new Set(uploadIds).size !== uploadIds.length) throw badRequest('Choose each uploaded file only once.');
 
-  // One transaction: a post with half its media or a poll with no options is
-  // not a state the feed should ever have to render.
+  // One transaction: serialize the daily limit, consume owner-bound uploads,
+  // and insert the post/media/poll as one all-or-nothing operation.
   const postId = await withTransaction(async (conn) => {
+    const [owners] = await conn.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+    if (!owners.length) throw notFound('Account not found.');
+    const [recent] = await conn.execute(
+      'SELECT COUNT(*) AS n FROM posts WHERE user_id = ? AND created_at > DATE_SUB(NOW(), INTERVAL 24 HOUR)',
+      [userId]
+    );
+    if (Number(recent[0]?.n || 0) >= MAX_PER_DAY) {
+      throw conflict(`You can share up to ${MAX_PER_DAY} posts a day. Try again a little later.`);
+    }
+
+    let uploadsById = new Map();
+    if (uploadIds.length) {
+      const placeholders = uploadIds.map(() => '?').join(',');
+      const [uploads] = await conn.execute(
+        `SELECT upload_id, kind, file_key, thumb_key, media_url, thumb_url
+           FROM pending_social_uploads
+          WHERE owner_id = ? AND expires_at > NOW() AND upload_id IN (${placeholders})
+          FOR UPDATE`,
+        [userId, ...uploadIds]
+      );
+      if (uploads.length !== uploadIds.length) {
+        throw badRequest('One or more uploads expired or are not available to this account. Choose the files again.');
+      }
+      uploadsById = new Map(uploads.map((upload) => [String(upload.upload_id), upload]));
+    }
+
     const [res] = await conn.execute(
       'INSERT INTO posts (user_id, body, expires_at) VALUES (?,?, DATE_ADD(NOW(), INTERVAL ? HOUR))',
       [userId, clean, POST_TTL_HOURS]
     );
     const id = Number(res.insertId);
 
-    for (const [i, m] of media.entries()) {
+    for (const [i, mediaHandle] of media.entries()) {
+      const upload = uploadsById.get(mediaHandle.uploadId);
+      if (!upload) throw badRequest('That upload is unavailable. Choose the file again.');
       await conn.execute(
         `INSERT INTO post_media (post_id, kind, url, thumb_url, media_key, thumb_key, position)
          VALUES (?,?,?,?,?,?,?)`,
-        [id, m.kind, m.url, m.thumbUrl || null, m.fileKey, m.thumbKey || null, i]
+        [id, upload.kind, upload.media_url, upload.thumb_url, upload.file_key, upload.thumb_key, i]
       );
+    }
+
+    if (uploadIds.length) {
+      const placeholders = uploadIds.map(() => '?').join(',');
+      const [consumed] = await conn.execute(
+        `DELETE FROM pending_social_uploads WHERE owner_id = ? AND upload_id IN (${placeholders})`,
+        [userId, ...uploadIds]
+      );
+      if (consumed.affectedRows !== uploadIds.length) throw badRequest('One or more uploads were already used. Choose the files again.');
     }
 
     if (pollOptions) {
@@ -287,35 +316,37 @@ export async function feed(viewerId, { limit = 20, before = null, authorId = nul
 }
 
 export async function deletePost(postId, userId, { asModerator = false } = {}) {
-  const row = await queryOne('SELECT id, user_id FROM posts WHERE id = ? AND deleted_at IS NULL LIMIT 1', [
-    postId
-  ]);
-  if (!row) throw notFound('That post is no longer available.');
-  if (!asModerator && Number(row.user_id) !== Number(userId)) throw forbidden('That post is not yours.');
+  const result = await withTransaction(async (conn) => {
+    const [rows] = await conn.execute(
+      'SELECT id, user_id FROM posts WHERE id = ? AND deleted_at IS NULL LIMIT 1 FOR UPDATE', [postId]
+    );
+    const row = rows[0];
+    if (!row) throw notFound('That post is no longer available.');
+    if (!asModerator && Number(row.user_id) !== Number(userId)) throw forbidden('That post is not yours.');
 
-  const media = await query('SELECT media_key, thumb_key FROM post_media WHERE post_id = ?', [postId]);
+    const [media] = await conn.execute(
+      'SELECT media_key, thumb_key FROM post_media WHERE post_id = ? FOR UPDATE', [postId]
+    );
+    const keys = media.flatMap((item) => [item.media_key, item.thumb_key].filter(Boolean));
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+    await conn.execute('UPDATE posts SET deleted_at = NOW(), deleted_by = ? WHERE id = ?', [userId, postId]);
+    // Comments die with their parent, immediately and not just at read time.
+    await conn.execute(
+      'UPDATE comments SET deleted_at = NOW(), deleted_by = ? WHERE post_id = ? AND deleted_at IS NULL',
+      [userId, postId]
+    );
+    return { keys };
+  });
 
-  await execute('UPDATE posts SET deleted_at = NOW(), deleted_by = ? WHERE id = ?', [userId, postId]);
-  // Comments die with their parent, immediately and not just at read time.
-  await execute('UPDATE comments SET deleted_at = NOW(), deleted_by = ? WHERE post_id = ? AND deleted_at IS NULL', [
-    userId,
-    postId
-  ]);
   await notificationService.unnotify(`post_like:post:${postId}`);
   await notificationService.unnotify(`post_comment:post:${postId}`);
-
-  let files = 0;
-  for (const m of media) {
-    for (const key of [m.media_key, m.thumb_key].filter(Boolean)) {
-      try {
-        if (await storage.remove(key)) files += 1;
-      } catch (err) {
-        log.warn('media unlink failed', { key, error: err.message });
-      }
-    }
-  }
-
-  return { deleted: true, id: postId, filesRemoved: files };
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+  return {
+    deleted: true,
+    id: postId,
+    filesRemoved: removed.deletedFiles,
+    filesPending: removed.failedFiles
+  };
 }
 
 /* ------------------------------------------------------------------ *
@@ -580,29 +611,43 @@ export async function likeComment(commentId, userId, actorUsername) {
 
 /** Hard-delete expired posts + their media. Comments cascade with the post. */
 export async function purgeExpired({ limit = 2000 } = {}) {
-  const rows = await query(
-    `SELECT id FROM posts WHERE expires_at <= NOW() OR deleted_at IS NOT NULL LIMIT ?`,
-    [limit]
+  const max = Math.max(1, Math.min(5000, Number.parseInt(limit, 10) || 2000));
+  const candidates = await query(
+    `SELECT id FROM posts
+      WHERE expires_at <= NOW() OR deleted_at IS NOT NULL
+      ORDER BY id LIMIT ?`,
+    [max]
   );
-  if (!rows.length) return { posts: 0, files: 0 };
+  if (!candidates.length) return { posts: 0, files: 0, missingFiles: 0, failedFiles: 0 };
 
-  const ids = rows.map((r) => Number(r.id));
-  const ph = ids.map(() => '?').join(',');
+  const candidateIds = candidates.map((row) => Number(row.id));
+  const placeholders = candidateIds.map(() => '?').join(',');
+  const result = await withTransaction(async (conn) => {
+    const [rows] = await conn.execute(
+      `SELECT id FROM posts
+        WHERE id IN (${placeholders}) AND (expires_at <= NOW() OR deleted_at IS NOT NULL)
+        FOR UPDATE`,
+      candidateIds
+    );
+    if (!rows.length) return { deleted: 0, keys: [] };
+    const ids = rows.map((row) => Number(row.id));
+    const rowPlaceholders = ids.map(() => '?').join(',');
+    const [media] = await conn.execute(
+      `SELECT media_key, thumb_key FROM post_media WHERE post_id IN (${rowPlaceholders}) FOR UPDATE`, ids
+    );
+    const keys = media.flatMap((item) => [item.media_key, item.thumb_key].filter(Boolean));
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+    const [deleted] = await conn.execute(`DELETE FROM posts WHERE id IN (${rowPlaceholders})`, ids);
+    return { deleted: deleted.affectedRows, keys };
+  });
 
-  const media = await query(`SELECT media_key, thumb_key FROM post_media WHERE post_id IN (${ph})`, ids);
-  let files = 0;
-  for (const m of media) {
-    for (const key of [m.media_key, m.thumb_key].filter(Boolean)) {
-      try {
-        if (await storage.remove(key)) files += 1;
-      } catch {
-        /* already gone */
-      }
-    }
-  }
-
-  const res = await execute(`DELETE FROM posts WHERE id IN (${ph})`, ids);
-  return { posts: res.affectedRows, files };
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+  return {
+    posts: result.deleted,
+    files: removed.deletedFiles,
+    missingFiles: removed.missingFiles,
+    failedFiles: removed.failedFiles
+  };
 }
 
 /** Sweep comments orphaned by their own expiry (a post may outlive a rewrite). */

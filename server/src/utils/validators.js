@@ -305,7 +305,8 @@ export const tapSchema = z.object({
 export const favoriteSchema = z.object({ targetId: numericIdSchema });
 
 export const verificationSchema = z.object({
-  gesture: trimmed(z.string().min(1).max(40))
+  challengeId: uuidSchema,
+  challengeToken: trimmed(z.string().regex(/^[A-Za-z0-9_-]{43}$/, 'That photo-verification challenge is not valid.'))
 });
 
 export const shareLocationSchema = z.object({
@@ -477,13 +478,9 @@ export const envelopeSchema = z.object({
  * restated and the services own the runtime check as well.
  * ------------------------------------------------------------------ */
 
-/** A media handle produced by POST /api/uploads/social. */
+/** Opaque, owner-bound media handle produced by POST /api/uploads/social. */
 export const socialMediaSchema = z.object({
-  kind: z.enum(['photo', 'video']),
-  url: z.string().max(255),
-  thumbUrl: z.string().max(255).optional().nullable(),
-  fileKey: z.string().max(255),
-  thumbKey: z.string().max(255).optional().nullable()
+  uploadId: z.string().uuid('That upload has expired. Choose the file again.')
 });
 
 export const createMomentSchema = z

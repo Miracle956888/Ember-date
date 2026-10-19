@@ -45,9 +45,12 @@ jobs:
           done
 
       - name: Dependency + config smoke (no database needed)
-        # Exercises multer, sharp, file-type, node-cron, express/qs, cookie, the
-        # https-upgrade rule and the production seed guard against the real modules.
+        # Exercises upload/media dependencies, HTTP/query behavior, deploy guards,
+        # and the versioned migration parser/adoption/reset safety helpers.
         run: npm test
+
+      - name: Security unit suite
+        run: npm run test:security
 
       - name: Deploy pre-flight (offline)
         env:
@@ -125,48 +128,62 @@ jobs:
 
       - run: npm ci
       - run: npm run build:css
+      - name: Install Chromium for the browser smoke suite
+        run: npx playwright install --with-deps chromium
 
-      - name: Apply the schema to a real MySQL 8
-        # The canonical schema (no MariaDB rewrite path here), so collation and
-        # generated-column problems surface on the runner instead of on a host.
-        run: node db/migrate.js
+      - name: Apply only the baseline to disposable MySQL 8
+        # Applying 0001 by itself lets the next step exercise every pending
+        # additive migration against MySQL 8 without ever dropping a DB.
+        run: node db/migrate.js --target=0001
 
-      - name: A container restart must not destroy data
-        # The image and compose both run `node db/migrate.js --if-needed` on every
-        # start, and db/schema.sql is a destructive snapshot (23 of 42 tables are
-        # dropped and recreated, the rest abort the run). So the no-op path is what
-        # keeps a public deployment's data alive across restarts, redeploys and
-        # OOMs. Prove the row survives, and prove the unguarded call refuses.
-
+      - name: Apply additive migrations and prove restart/checksum safety
         run: |
-          set -uo pipefail
+          set -euo pipefail
           mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci \
-            -e "INSERT INTO interests (slug, label) VALUES ('survive-restart','Survive Restart')"
-          echo "== --if-needed on a populated schema must skip, not re-apply =="
-          node db/migrate.js --if-needed | tee migrate-skip.log
-          grep -q "already present in" migrate-skip.log || { echo "expected a skip line"; exit 1; }
-          node db/migrate.js --if-needed >/dev/null 2>&1 || { echo "boot-time migrate must exit 0 on a restarted container"; exit 1; }
+            -e "INSERT INTO interests (slug, label) VALUES ('migration-sentinel','Migration Sentinel')"
+          echo "== apply the pending versioned migration =="
+          node db/migrate.js | tee migrate-apply.log
+          grep -q "applied 0002_admin_security" migrate-apply.log
+          grep -q "applied 0003_verification_send_history" migrate-apply.log
+          grep -q "applied 0004_durable_media_retention" migrate-apply.log
+          for version in 0001 0002 0003 0004; do
+            applied=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
+              -e "SELECT COUNT(*) FROM schema_migrations WHERE version='$version'")
+            [ "$applied" = "1" ] || { echo "expected $version to be recorded once (count=$applied)"; exit 1; }
+          done
+          current=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
+            -e "SELECT MAX(version) FROM schema_migrations")
+          [ "$current" = "0004" ] || { echo "expected latest migration 0004, got $current"; exit 1; }
           rows=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
-                 -e "SELECT COUNT(*) FROM interests WHERE slug='survive-restart'")
-          [ "$rows" = "1" ] || { echo "row lost across a restart (count=$rows) - boot wiped the database"; exit 1; }
-          echo "row survived two more boots"
-          echo "== the bare command must refuse rather than half-apply =="
-          if node db/migrate.js >migrate-refuse.log 2>&1; then
-            echo "plain migrate succeeded on a populated schema - the guard is gone"; exit 1
-          fi
-          grep -q "not re-runnable" migrate-refuse.log || { echo "refused for the wrong reason:"; cat migrate-refuse.log; exit 1; }
-          echo "refused as designed"
-          echo "== --fresh is the explicit, loud rebuild =="
-          node db/migrate.js --fresh >migrate-fresh.log 2>&1 || { echo "--fresh failed:"; tail -20 migrate-fresh.log; exit 1; }
-          gone=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
-                 -e "SELECT COUNT(*) FROM interests WHERE slug='survive-restart'")
-          [ "$gone" = "0" ] || { echo "--fresh left stale rows behind"; exit 1; }
+            -e "SELECT COUNT(*) FROM interests WHERE slug='migration-sentinel'")
+          [ "$rows" = "1" ] || { echo "migration changed the synthetic sentinel (count=$rows)"; exit 1; }
           tables=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
-                   -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='ember_ci'")
-          [ "$tables" = "42" ] || { echo "--fresh rebuilt $tables tables, expected 42"; exit 1; }
-          echo "42 tables after --fresh"
-          # Put the schema back the way the next step expects it (fresh + empty).
-          node db/migrate.js --if-needed | grep -q "applied 4" || true
+            -e "SELECT COUNT(*) FROM information_schema.TABLES WHERE TABLE_SCHEMA='ember_ci' AND TABLE_TYPE='BASE TABLE'")
+          [ "$tables" = "49" ] || { echo "expected 48 business tables plus schema_migrations, got $tables"; exit 1; }
+          echo "0002-0004 applied; synthetic row survived; 48 business tables + migration ledger present"
+
+          echo "== boot-time and normal reruns are no-ops on current history =="
+          node db/migrate.js --if-needed | tee migrate-skip.log
+          grep -q "schema is current; no pending migrations" migrate-skip.log
+          node db/migrate.js >/dev/null
+          rows=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
+            -e "SELECT COUNT(*) FROM interests WHERE slug='migration-sentinel'")
+          [ "$rows" = "1" ] || { echo "synthetic row did not survive repeated starts"; exit 1; }
+
+          echo "== checksum tampering is detected before SQL is replayed =="
+          checksum=$(mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci -N -B \
+            -e "SELECT checksum FROM schema_migrations WHERE version='0002'")
+          [ "${#checksum}" = "64" ] || { echo "unexpected migration checksum length"; exit 1; }
+          mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci \
+            -e "UPDATE schema_migrations SET checksum=REPEAT('0',64) WHERE version='0002'"
+          if node db/migrate.js >migrate-tamper.log 2>&1; then
+            echo "checksum tampering was not detected"; exit 1
+          fi
+          grep -q "Checksum mismatch" migrate-tamper.log
+          mysql -h 127.0.0.1 -uroot -pci-root-password ember_ci \
+            -e "UPDATE schema_migrations SET checksum='$checksum' WHERE version='0002'"
+          node db/migrate.js >/dev/null
+          echo "checksum mismatch refused; original checksum restored"
 
       - name: Boot with seeded data and verify every route, asset and guard
         # One step: GitHub tears the process tree down between steps, so the server
@@ -184,10 +201,15 @@ jobs:
           curl -fsS http://127.0.0.1:3000/api/health || { echo "never became healthy"; exit 1; }
           echo "== seeded demo data (development mode: the seeder's own guard allows this) =="
           node db/seed.js
+          echo "== synthetic security integration =="
+          ALLOW_SYNTHETIC_SECURITY_TESTS=1 NODE_ENV=development BASE_URL=http://127.0.0.1:3000 \
+            node scripts/security-integration.mjs
           echo "== route sweep =="
           node scripts/route-sweep.mjs --base http://127.0.0.1:3000 --auth --demo
           echo "== realtime suite =="
           BASE=http://127.0.0.1:3000 node scripts/smoke-socket.js
+          echo "== headless browser suite =="
+          node scripts/smoke-browser.js --base http://127.0.0.1:3000
           kill $SRV 2>/dev/null || true
           wait $SRV 2>/dev/null || true
           trap - EXIT
@@ -314,6 +336,8 @@ jobs:
           set -e
           cd /app
           test -s public/css/app.css || { echo "public/css/app.css missing or empty in the image"; exit 1; }
+          test -s scripts/bootstrap-admin.mjs || { echo "bootstrap-admin operator tool missing from image"; exit 1; }
+          test -s scripts/deploy-check.mjs || { echo "deploy-check operator tool missing from image"; exit 1; }
           echo "app.css: $(wc -c < public/css/app.css) bytes"
           node -e '
             const fs = require("fs");
@@ -329,7 +353,7 @@ jobs:
               process.exit(1);
             }
             console.log(names.length + " direct dependencies resolved");
-            const dev = ["eslint", "tailwindcss", "nodemon", "concurrently", "socket.io-client"].filter((d) => fs.existsSync("node_modules/" + d));
+            const dev = ["eslint", "tailwindcss", "nodemon", "concurrently", "socket.io-client", "playwright"].filter((d) => fs.existsSync("node_modules/" + d));
             if (dev.length) {
               console.error("devDependencies leaked into the runtime image: " + dev.join(", "));
               process.exit(1);

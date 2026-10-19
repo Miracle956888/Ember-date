@@ -1,8 +1,6 @@
+@import 'tailwindcss';
+@config '../tailwind.config.js';
 @import '../public/fonts/fonts.css';
-
-@tailwind base;
-@tailwind components;
-@tailwind utilities;
 
 /* ------------------------------------------------------------------ base */
 @layer base {
@@ -190,7 +188,7 @@
   }
 
   .btn-primary {
-    @apply btn text-white shadow-action;
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-full px-6 py-3 text-[15px] font-semibold transition-all duration-200 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 text-white shadow-action;
     background-image: var(--brand-gradient);
   }
   .btn-primary:hover {
@@ -198,15 +196,15 @@
   }
 
   .btn-secondary {
-    @apply btn border border-line/[var(--line-a)] bg-surface text-ink hover:bg-surface-grey;
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-full px-6 py-3 text-[15px] font-semibold transition-all duration-200 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 border border-line/[var(--line-a)] bg-surface text-ink hover:bg-surface-grey;
   }
 
   .btn-ghost {
-    @apply btn text-ink-soft hover:bg-surface-grey hover:text-ink;
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-full px-6 py-3 text-[15px] font-semibold transition-all duration-200 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 text-ink-soft hover:bg-surface-grey hover:text-ink;
   }
 
   .btn-danger {
-    @apply btn bg-nope text-white hover:brightness-95;
+    @apply inline-flex select-none items-center justify-center gap-2 rounded-full px-6 py-3 text-[15px] font-semibold transition-all duration-200 active:scale-[0.97] disabled:pointer-events-none disabled:opacity-50 bg-nope text-white hover:brightness-95;
   }
 
   .btn-block {
@@ -571,7 +569,7 @@
     width: 6.5rem;
     height: 9.5rem;
   }
-  @screen sm {
+  @media (min-width: 40rem) {
     .call-local {
       width: 9rem;
       height: 13rem;

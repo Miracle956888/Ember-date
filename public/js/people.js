@@ -7,6 +7,7 @@
  * "meta" line and which quick actions to show.
  */
 import { api, ApiError } from './api.js';
+import { publicProfilePath } from './navigation.js';
 import { escapeHtml, avatarSrc, initialsAvatar, toast, timeAgo, openModal, html } from './ui.js';
 
 const INTENT_LABELS = {
@@ -104,12 +105,13 @@ export function reasonList(person) {
 export function personCard(person, { meta = '', source = 'direct', showLike = true } = {}) {
   const photo = person.photos?.[0]?.url || person.avatarUrl || initialsAvatar(person.displayName, person.id);
   const metaLine = meta || person.distance || person.city || '';
+  const profilePath = person.username ? publicProfilePath(person.username, source) : '/app';
 
   return `
   <article class="group relative overflow-hidden rounded-3xl bg-surface shadow-card transition hover:shadow-lift"
            data-person="${person.id}">
     ${onlineMark(person)}
-    <a href="/profile?id=${person.id}&from=${escapeHtml(source)}" class="block focus-visible:outline-none"
+    <a href="${escapeHtml(profilePath)}" class="block focus-visible:outline-none"
        data-person-open="${person.id}" aria-label="View ${escapeHtml(person.displayName)}'s profile">
       <div class="relative aspect-[4/5] overflow-hidden bg-surface-grey">
         <img src="${escapeHtml(photo)}" alt="" loading="lazy" decoding="async"

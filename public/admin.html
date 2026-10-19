@@ -101,7 +101,7 @@
             24-hour rule
           </h2>
           <p class="mt-1.5 text-[13px] leading-relaxed text-brand-700/85">
-            Messages, photos and videos are deleted permanently 24 hours after they are sent.
+            Chat messages and attachments expire after the configured period. Moments and posts, including their media, expire after 24 hours. Profile photos stay until you remove them or delete your account.
           </p>
         </div>
         <p class="mt-4 text-center text-[11px] text-ink-faint">
@@ -160,7 +160,7 @@
             </p>
           </header>
 
-          <!-- gate shown to anyone without moderator rights -->
+          <!-- The server enforces access independently for every page action. -->
           <div id="admin-denied" class="hidden rounded-3xl border border-line/[var(--line-a)] bg-surface-grey p-8 text-center">
             <p class="text-[15px] font-semibold text-ink">This area is not available.</p>
             <p class="mt-1 text-[14px] text-ink-soft">If you think that is wrong, contact an administrator.</p>
@@ -168,18 +168,21 @@
           </div>
 
           <div id="admin-body" class="hidden">
-
-            <div class="mb-5 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Moderation sections">
-              <button type="button" class="seg-tab is-active" role="tab" aria-selected="true" data-admin-tab="queue">
+            <div class="mb-5 flex gap-2 overflow-x-auto pb-1" role="tablist" aria-label="Administration sections">
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="queue" data-permission="reports:read">
                 Reports <span class="badge ml-1.5 hidden" data-admin-badge="queue">0</span>
               </button>
-              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="users">Users</button>
-              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="analytics">Analytics</button>
-              <button type="button" class="seg-tab hidden" role="tab" aria-selected="false" data-admin-tab="audit" id="admin-audit-tab">Audit log</button>
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="users" data-permission="users:read_basic">Users</button>
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="verification" data-permission="verification:read">Photo review</button>
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="analytics" data-permission="analytics:read">Analytics</button>
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="audit" data-permission="audit:read">Audit log</button>
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="activity" data-permission="activity:read">Activity</button>
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="health" data-permission="system:health">Health</button>
+              <button type="button" class="seg-tab" role="tab" aria-selected="false" data-admin-tab="settings" data-permission="system:read">Settings</button>
             </div>
 
             <!-- ------------------------------------------------ reports -->
-            <section data-admin-panel="queue" role="tabpanel" aria-label="Report queue">
+            <section data-admin-panel="queue" role="tabpanel" aria-label="Report queue" hidden>
               <div class="mb-4 flex flex-wrap items-center gap-2">
                 <label class="sr-only" for="queue-status">Filter by status</label>
                 <select id="queue-status" class="field !w-auto !py-2 text-[14px]">
@@ -202,13 +205,14 @@
                 <button type="button" id="queue-refresh" class="btn-ghost !py-2 text-[14px]">Refresh</button>
               </div>
               <div id="queue-list" class="flex flex-col gap-3" aria-live="polite"></div>
+              <button type="button" id="queue-more" class="btn-secondary mt-4 hidden">Load more</button>
             </section>
 
             <!-- -------------------------------------------------- users -->
             <section data-admin-panel="users" role="tabpanel" aria-label="User administration" hidden>
               <form id="user-search-form" class="mb-4 flex flex-wrap gap-2" role="search">
                 <label class="sr-only" for="user-search">Search users</label>
-                <input id="user-search" type="search" autocomplete="off" placeholder="Username, display name or email"
+                <input id="user-search" type="search" autocomplete="off" placeholder="Username or display name"
                        class="field min-w-0 flex-1" />
                 <label class="sr-only" for="user-status">Filter by account status</label>
                 <select id="user-status" class="field !w-auto !py-2 text-[14px]">
@@ -221,6 +225,17 @@
               </form>
               <p id="user-count" class="mb-3 text-[13px] text-ink-faint"></p>
               <div id="user-list" class="flex flex-col gap-2" aria-live="polite"></div>
+              <button type="button" id="user-more" class="btn-secondary mt-4 hidden">Load more</button>
+            </section>
+
+            <!-- ------------------------------------------ photo verification -->
+            <section data-admin-panel="verification" role="tabpanel" aria-label="Photo verification review" hidden>
+              <div class="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <p class="max-w-2xl text-[13px] text-ink-soft">Evidence is private and visible only to staff authorized to review verification. Reviewed evidence is queued for deletion.</p>
+                <button type="button" id="verification-refresh" class="btn-ghost !py-2 text-[14px]">Refresh</button>
+              </div>
+              <div id="verification-list" class="flex flex-col gap-3" aria-live="polite"></div>
+              <button type="button" id="verification-more" class="btn-secondary mt-4 hidden">Load more</button>
             </section>
 
             <!-- ---------------------------------------------- analytics -->
@@ -230,13 +245,31 @@
 
             <!-- -------------------------------------------------- audit -->
             <section data-admin-panel="audit" role="tabpanel" aria-label="Audit log" hidden>
-              <p class="mb-3 text-[13px] text-ink-soft">
-                Every moderation action, newest first. This log is append-only.
-              </p>
+              <p class="mb-3 text-[13px] text-ink-soft">Privileged actions, newest first. Each recorded mutation and its audit entry commit together.</p>
               <div id="audit-list" class="flex flex-col gap-2" aria-live="polite"></div>
               <button type="button" id="audit-more" class="btn-secondary mt-4 hidden">Load more</button>
             </section>
 
+            <!-- ----------------------------------------------- activity -->
+            <section data-admin-panel="activity" role="tabpanel" aria-label="Staff activity" hidden>
+              <p class="mb-3 text-[13px] text-ink-soft">A privacy-filtered staff activity stream. It contains event categories and resource identifiers, not message text or delivery secrets.</p>
+              <div id="activity-list" class="flex flex-col gap-2" aria-live="polite"></div>
+              <button type="button" id="activity-more" class="btn-secondary mt-4 hidden">Load more</button>
+            </section>
+
+            <!-- -------------------------------------------------- health -->
+            <section data-admin-panel="health" role="tabpanel" aria-label="System health" hidden>
+              <div class="mb-4 flex items-center justify-between gap-2">
+                <p class="text-[13px] text-ink-soft">Live checks are best-effort. Provider values show configuration only; reachability is not probed here.</p>
+                <button type="button" id="health-refresh" class="btn-ghost !py-2 text-[14px]">Refresh</button>
+              </div>
+              <div id="health-body" class="flex flex-col gap-3" aria-live="polite"></div>
+            </section>
+
+            <!-- ------------------------------------------------ settings -->
+            <section data-admin-panel="settings" role="tabpanel" aria-label="Runtime settings" hidden>
+              <div id="settings-body" class="flex flex-col gap-3" aria-live="polite"></div>
+            </section>
           </div>
         </div>
       </main>

@@ -2,17 +2,23 @@
  * LAYER 3 of the ephemerality rule: the destructive cleanup worker.
  *
  * Every 5 minutes (and once on boot) this job:
- *   1. selects expired attachment rows and unlinks each file from disk (ENOENT ignored)
- *   2. deletes the expired attachment rows
- *   3. deletes the expired message rows
- *   4. deletes orphaned/empty conversations older than 30 days
- *   5. logs { deletedMessages, deletedFiles, durationMs }
+ *   1. retries the durable media-deletion outbox
+ *   2. expires abandoned uploads and attachment rows, enqueueing keys transactionally
+ *   3. deletes expired messages and social content after media ownership is queued
+ *   4. removes orphaned/empty conversations and stale location/auth records
+ *   5. logs aggregate deletion counts without file paths or message bodies
  *
  * Every run is wrapped in try/catch: a cleanup failure must never crash the server.
  */
 import cron from 'node-cron';
-import { query, execute } from '../db/pool.js';
-import { storage } from '../services/storage.service.js';
+import { query, execute, withTransaction } from '../db/pool.js';
+import {
+  MEDIA_DELETE_REASON,
+  discardUnownedMedia,
+  enqueueMediaDeletion,
+  processMediaDeletionQueue,
+  removeQueuedMedia
+} from '../services/media-deletion.service.js';
 import { purgeExpiredRefreshTokens } from '../services/auth.service.js';
 import * as momentService from '../services/moment.service.js';
 import * as postService from '../services/post.service.js';
@@ -49,63 +55,134 @@ export async function runCleanup({ silent = false } = {}) {
     deletedAttachments: 0,
     deletedConversations: 0,
     deletedTokens: 0,
+    deletedVerificationTokens: 0,
+    deletedPendingUploads: 0,
+    failedMediaDeletions: 0,
     missingFiles: 0,
     durationMs: 0
   };
 
   try {
-    // ---- 1. expired attachments: which messages/conversations are affected?
+    // Durable outbox covers account deletion, reviewed evidence, ordinary
+    // content retention and explicit profile-photo removal.
+    const queuedMedia = await processMediaDeletionQueue(200);
+    stats.deletedFiles += queuedMedia.deletedFiles;
+    stats.missingFiles += queuedMedia.missingFiles;
+    stats.failedMediaDeletions += queuedMedia.failedFiles;
+
+    // Social media is first uploaded into a short-lived, owner-bound reservation.
+    // If the composer is abandoned, queue its files before dropping the reservation.
+    const pendingSocial = await query(
+      `SELECT upload_id FROM pending_social_uploads
+        WHERE expires_at <= NOW() ORDER BY expires_at LIMIT 200`
+    );
+    if (pendingSocial.length) {
+      const candidateIds = pendingSocial.map((row) => String(row.upload_id));
+      const placeholders = candidateIds.map(() => '?').join(',');
+      const result = await withTransaction(async (conn) => {
+        const [rows] = await conn.execute(
+          `SELECT upload_id, file_key, thumb_key FROM pending_social_uploads
+            WHERE upload_id IN (${placeholders}) AND expires_at <= NOW() FOR UPDATE`,
+          candidateIds
+        );
+        if (!rows.length) return { uploads: 0, keys: [] };
+        const keys = rows.flatMap((row) => [row.file_key, row.thumb_key].filter(Boolean));
+        await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.orphanedUpload);
+        const ids = rows.map((row) => String(row.upload_id));
+        const rowPlaceholders = ids.map(() => '?').join(',');
+        const [deleted] = await conn.execute(
+          `DELETE FROM pending_social_uploads WHERE upload_id IN (${rowPlaceholders})`, ids
+        );
+        return { uploads: deleted.affectedRows, keys };
+      });
+      stats.deletedPendingUploads = result.uploads;
+      if (result.keys.length) {
+        const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.orphanedUpload);
+        stats.deletedFiles += removed.deletedFiles;
+        stats.missingFiles += removed.missingFiles;
+        stats.failedMediaDeletions += removed.failedFiles;
+      }
+    }
+
+    // ---- 1. expired attachment rows and media belonging to expired messages
     const expiredAttachments = await query(
-      `SELECT a.id, a.file_path, a.thumb_path, a.message_id, msg.conversation_id
-         FROM attachments a
-    LEFT JOIN messages msg ON msg.id = a.message_id
-        WHERE a.expires_at <= NOW()`
+      `SELECT a.id FROM attachments a
+        LEFT JOIN messages msg ON msg.id = a.message_id
+       WHERE a.expires_at <= NOW() OR msg.expires_at <= NOW()
+       ORDER BY a.id LIMIT 500`
     );
-
-    for (const att of expiredAttachments) {
-      for (const key of [att.file_path, att.thumb_path]) {
-        if (!key) continue;
-        try {
-          const removed = await storage.remove(key);
-          if (removed) stats.deletedFiles += 1;
-          else stats.missingFiles += 1; // ENOENT - already gone, fine
-        } catch (err) {
-          log.warn('failed to unlink file', { key, error: err.message });
-        }
-      }
-    }
-
-    // ---- 2. delete expired attachment rows
     if (expiredAttachments.length) {
-      const res = await execute('DELETE FROM attachments WHERE expires_at <= NOW()');
-      stats.deletedAttachments = res.affectedRows;
-    }
-
-    // ---- also drop orphan uploads never attached to a message (abandoned composer)
-    const orphanUploads = await query(
-      `SELECT id, file_path, thumb_path FROM attachments
-        WHERE message_id IS NULL AND created_at < DATE_SUB(NOW(), INTERVAL 2 HOUR)`
-    );
-    for (const att of orphanUploads) {
-      for (const key of [att.file_path, att.thumb_path]) {
-        if (!key) continue;
-        try {
-          if (await storage.remove(key)) stats.deletedFiles += 1;
-        } catch (err) {
-          log.warn('failed to unlink orphan upload', { key, error: err.message });
-        }
+      const candidateIds = expiredAttachments.map((row) => Number(row.id));
+      const placeholders = candidateIds.map(() => '?').join(',');
+      const result = await withTransaction(async (conn) => {
+        const [rows] = await conn.execute(
+          `SELECT a.id, a.file_path, a.thumb_path
+             FROM attachments a LEFT JOIN messages msg ON msg.id = a.message_id
+            WHERE a.id IN (${placeholders})
+              AND (a.expires_at <= NOW() OR msg.expires_at <= NOW())
+            FOR UPDATE`,
+          candidateIds
+        );
+        if (!rows.length) return { deleted: 0, keys: [] };
+        const keys = rows.flatMap((row) => [row.file_path, row.thumb_path].filter(Boolean));
+        await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+        const ids = rows.map((row) => Number(row.id));
+        const rowPlaceholders = ids.map(() => '?').join(',');
+        const [deleted] = await conn.execute(
+          `DELETE FROM attachments WHERE id IN (${rowPlaceholders})`, ids
+        );
+        return { deleted: deleted.affectedRows, keys };
+      });
+      stats.deletedAttachments += result.deleted;
+      if (result.keys.length) {
+        const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+        stats.deletedFiles += removed.deletedFiles;
+        stats.missingFiles += removed.missingFiles;
+        stats.failedMediaDeletions += removed.failedFiles;
       }
     }
+
+    // ---- 2. upload-only chat attachments abandoned before a message is sent
+    const orphanUploads = await query(
+      `SELECT id FROM attachments WHERE message_id IS NULL
+        AND created_at < DATE_SUB(NOW(), INTERVAL 2 HOUR) ORDER BY id LIMIT 500`
+    );
     if (orphanUploads.length) {
-      const ids = orphanUploads.map((a) => a.id);
-      const ph = ids.map(() => '?').join(',');
-      const res = await execute(`DELETE FROM attachments WHERE id IN (${ph})`, ids);
-      stats.deletedAttachments += res.affectedRows;
+      const candidateIds = orphanUploads.map((row) => Number(row.id));
+      const placeholders = candidateIds.map(() => '?').join(',');
+      const result = await withTransaction(async (conn) => {
+        const [rows] = await conn.execute(
+          `SELECT id, file_path, thumb_path FROM attachments
+            WHERE id IN (${placeholders}) AND message_id IS NULL
+              AND created_at < DATE_SUB(NOW(), INTERVAL 2 HOUR)
+            FOR UPDATE`,
+          candidateIds
+        );
+        if (!rows.length) return { deleted: 0, keys: [] };
+        const keys = rows.flatMap((row) => [row.file_path, row.thumb_path].filter(Boolean));
+        await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+        const ids = rows.map((row) => Number(row.id));
+        const rowPlaceholders = ids.map(() => '?').join(',');
+        const [deleted] = await conn.execute(
+          `DELETE FROM attachments WHERE id IN (${rowPlaceholders})`, ids
+        );
+        return { deleted: deleted.affectedRows, keys };
+      });
+      stats.deletedAttachments += result.deleted;
+      if (result.keys.length) {
+        const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+        stats.deletedFiles += removed.deletedFiles;
+        stats.missingFiles += removed.missingFiles;
+        stats.failedMediaDeletions += removed.failedFiles;
+      }
     }
 
     // ---- 3. expired messages (collect ids first so clients can be notified)
     const expiredMessages = await query(
-      'SELECT id, conversation_id FROM messages WHERE expires_at <= NOW() LIMIT 5000'
+      `SELECT msg.id, msg.conversation_id FROM messages msg
+        WHERE msg.expires_at <= NOW()
+          AND NOT EXISTS (SELECT 1 FROM attachments a WHERE a.message_id = msg.id)
+        ORDER BY msg.id LIMIT 5000`
     );
     if (expiredMessages.length) {
       const ids = expiredMessages.map((m) => Number(m.id));
@@ -124,7 +201,7 @@ export async function runCleanup({ silent = false } = {}) {
           try {
             broadcast(conversationId, messageIds);
           } catch (err) {
-            log.warn('broadcast failed', { conversationId, error: err.message });
+            log.warn('message-expiry broadcast failed', { code: err.code || 'SOCKET_ERROR' });
           }
         }
       }
@@ -157,61 +234,63 @@ export async function runCleanup({ silent = false } = {}) {
 
     // ---- 6. the social layer: 24-hour moments and posts.
     //
-    // Both purges own their media unlinking, because only they know which
-    // storage keys belong to which row. Each is capped per run so a backlog
-    // drains over several passes instead of holding a long transaction — the
-    // job runs every 5 minutes, so a cap of 2000 clears 24k rows an hour.
+    // Each purge owns its media-key lookup and transactionally enqueues keys
+    // before hard deletion. The bounded pass keeps lock time short; the queue
+    // worker retries any storage unlink that fails.
     const moments = await momentService.purgeExpired({ limit: 2000 });
     stats.deletedMoments = moments.moments;
     stats.deletedFiles += moments.files;
+    stats.missingFiles += moments.missingFiles;
+    stats.failedMediaDeletions += moments.failedFiles;
 
     const posts = await postService.purgeExpired({ limit: 2000 });
     stats.deletedPosts = posts.posts;
     stats.deletedFiles += posts.files;
+    stats.missingFiles += posts.missingFiles;
+    stats.failedMediaDeletions += posts.failedFiles;
 
     // Comments normally die with their post via ON DELETE CASCADE; this sweeps
     // the stragglers (soft-deleted, or expired while the post lives on).
     const comments = await postService.purgeExpiredComments({ limit: 5000 });
     stats.deletedComments = comments.comments;
 
-    // ---- 7. housekeeping: dead refresh tokens
+    // ---- 7. housekeeping: expired auth and verification tokens
     stats.deletedTokens = await purgeExpiredRefreshTokens();
+    // Keep issuance history for the complete 15-minute resend window, then
+    // remove expired/used/revoked codes so the token table does not grow forever.
+    stats.deletedVerificationTokens = (await execute(
+      'DELETE FROM verification_tokens WHERE created_at <= DATE_SUB(NOW(), INTERVAL 15 MINUTE) AND expires_at <= NOW()'
+    )).affectedRows;
 
     stats.durationMs = Date.now() - startedAt;
-    if (!silent || stats.deletedMessages || stats.deletedFiles || stats.deletedMoments || stats.deletedPosts) {
+    if (!silent || stats.deletedMessages || stats.deletedFiles || stats.deletedMoments || stats.deletedPosts || stats.failedMediaDeletions) {
       log.info('run complete', {
         deletedMessages: stats.deletedMessages,
         deletedMoments: stats.deletedMoments,
         deletedPosts: stats.deletedPosts,
+        deletedPendingUploads: stats.deletedPendingUploads,
         deletedComments: stats.deletedComments,
         deletedFiles: stats.deletedFiles,
+        missingFiles: stats.missingFiles,
+        failedMediaDeletions: stats.failedMediaDeletions,
         durationMs: stats.durationMs
       });
     }
     return stats;
   } catch (err) {
     stats.durationMs = Date.now() - startedAt;
-    log.error('run failed - server continues', { error: err.message, durationMs: stats.durationMs });
-    return { ...stats, error: err.message };
+    log.error('run failed - server continues', { code: err.code || 'CLEANUP_ERROR', durationMs: stats.durationMs });
+    return { ...stats, errorCode: err.code || 'CLEANUP_ERROR' };
   } finally {
     running = false;
   }
 }
 
-/** Immediately delete specific files (used by unmatch / clear-chat). */
+/** Backward-compatible helper; new ownership-changing paths enqueue in their DB transaction. */
 export async function purgeFiles(files = []) {
-  let deleted = 0;
-  for (const f of files) {
-    for (const key of [f.filePath, f.thumbPath]) {
-      if (!key) continue;
-      try {
-        if (await storage.remove(key)) deleted += 1;
-      } catch (err) {
-        log.warn('purgeFiles failed', { key, error: err.message });
-      }
-    }
-  }
-  return deleted;
+  const keys = files.flatMap((file) => [file.filePath, file.thumbPath].filter(Boolean));
+  const result = await discardUnownedMedia(keys, MEDIA_DELETE_REASON.contentRemoved);
+  return result.deletedFiles;
 }
 
 export function startCleanupJob() {
@@ -222,13 +301,13 @@ export function startCleanupJob() {
   const expression = cron.validate(env.CLEANUP_CRON) ? env.CLEANUP_CRON : '*/5 * * * *';
 
   task = cron.schedule(expression, () => {
-    runCleanup({ silent: true }).catch((err) => log.error('unhandled cleanup error', { error: err.message }));
+    runCleanup({ silent: true }).catch((err) => log.error('unhandled cleanup error', { code: err.code || 'CLEANUP_ERROR' }));
   });
 
   log.info('scheduled', { cron: expression, ttlHours: env.MESSAGE_TTL_HOURS });
 
   // Run once on boot so a restart immediately reaps anything that lapsed while down.
-  runCleanup({ silent: false }).catch((err) => log.error('boot cleanup failed', { error: err.message }));
+  runCleanup({ silent: false }).catch((err) => log.error('boot cleanup failed', { code: err.code || 'CLEANUP_ERROR' }));
 
   return task;
 }

@@ -510,13 +510,7 @@ function composer() {
               await api.createMoment({
                 kind: media.kind,
                 body: caption || null,
-                media: {
-                  kind: media.kind,
-                  url: media.url,
-                  thumbUrl: media.thumbUrl,
-                  fileKey: media.fileKey,
-                  thumbKey: media.thumbKey
-                }
+                media: { uploadId: media.uploadId }
               });
             }
           } catch (err) {

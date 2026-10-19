@@ -1,4 +1,5 @@
 import { queryOne, execute, withTransaction } from '../db/pool.js';
+import { MEDIA_DELETE_REASON, enqueueMediaDeletion, removeQueuedMedia } from './media-deletion.service.js';
 import { badRequest, notFound } from '../utils/errors.js';
 import { isBlockedEitherWay } from './user.service.js';
 import { calcAge } from './auth.service.js';
@@ -107,21 +108,45 @@ export async function recordSwipe(swiperId, swipeeId, direction) {
 
 /** Undo the most recent swipe (the "Rewind" button). */
 export async function rewindLastSwipe(swiperId) {
-  const last = await queryOne(
-    'SELECT id, swipee_id, direction FROM swipes WHERE swiper_id = ? ORDER BY id DESC LIMIT 1',
-    [swiperId]
-  );
-  if (!last) throw badRequest('There is nothing to rewind.');
+  const result = await withTransaction(async (conn) => {
+    const [swipes] = await conn.execute(
+      'SELECT id, swipee_id, direction FROM swipes WHERE swiper_id = ? ORDER BY id DESC LIMIT 1 FOR UPDATE',
+      [swiperId]
+    );
+    const last = swipes[0];
+    if (!last) throw badRequest('There is nothing to rewind.');
 
-  const userA = Math.min(swiperId, Number(last.swipee_id));
-  const userB = Math.max(swiperId, Number(last.swipee_id));
-  const match = await queryOne('SELECT id FROM matches WHERE user_a_id = ? AND user_b_id = ? LIMIT 1', [userA, userB]);
-  if (match) {
-    // Rewinding a swipe that produced a match also removes the match + chat.
-    await execute('DELETE FROM matches WHERE id = ?', [match.id]);
-  }
-  await execute('DELETE FROM swipes WHERE id = ?', [last.id]);
-  return { rewoundUserId: Number(last.swipee_id), direction: last.direction, matchRemoved: Boolean(match) };
+    const userA = Math.min(Number(swiperId), Number(last.swipee_id));
+    const userB = Math.max(Number(swiperId), Number(last.swipee_id));
+    const [matches] = await conn.execute(
+      'SELECT id FROM matches WHERE user_a_id = ? AND user_b_id = ? LIMIT 1 FOR UPDATE', [userA, userB]
+    );
+    const match = matches[0];
+    let keys = [];
+    if (match) {
+      const [files] = await conn.execute(
+        `SELECT a.file_path, a.thumb_path FROM attachments a
+           JOIN messages msg ON msg.id = a.message_id
+           JOIN conversations c ON c.id = msg.conversation_id
+          WHERE c.match_id = ? FOR UPDATE`,
+        [match.id]
+      );
+      keys = files.flatMap((file) => [file.file_path, file.thumb_path].filter(Boolean));
+      await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+      await conn.execute('DELETE FROM matches WHERE id = ?', [match.id]);
+    }
+    await conn.execute('DELETE FROM swipes WHERE id = ?', [last.id]);
+    return { last, matchRemoved: Boolean(match), keys };
+  });
+
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+  return {
+    rewoundUserId: Number(result.last.swipee_id),
+    direction: result.last.direction,
+    matchRemoved: result.matchRemoved,
+    deletedFiles: removed.deletedFiles,
+    pendingFiles: removed.failedFiles
+  };
 }
 
 export async function countLikesReceived(userId) {

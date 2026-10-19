@@ -12,14 +12,17 @@
  * are invisible until something is actually deployed and poked.
  *
  * Every local asset referenced by every page is fetched too, so a broken path in
- * any one of the 15 pages fails the run rather than surfacing as a missing icon.
+ * any one of the 17 pages fails the run rather than surfacing as a missing icon.
  *
  *   --base <url>   target, default http://localhost:3000
  *   --auth         also exercise login, the auth wall, CSRF and the 404 contract
  *   --demo         the app is expected to hold seeded demo data (login + profile)
  *
- * Exits 1 if anything fails. Reads nothing from disk except this file.
+ * Exits 1 if anything fails. Reads no database or user data; only the shared
+ * page-route list is imported, and every HTTP check targets the supplied host.
  */
+
+import { PAGE_NAMES as PAGES } from '../server/src/config/pages.js';
 
 const argv = process.argv.slice(2);
 const arg = (name, fb) => {
@@ -38,10 +41,6 @@ const WANT_DEMO = flag('demo');
 const DEMO_EMAIL = process.env.SWEEP_EMAIL || 'amara@example.com';
 const DEMO_PASSWORD = process.env.SWEEP_PASSWORD || 'Password123!';
 
-const PAGES = [
-  'index', 'login', 'register', 'app', 'matches', 'chats', 'chat', 'call',
-  'profile', 'nearby', 'likes', 'settings', 'u', 'moments', 'admin'
-];
 const API_PREFIXES = [
   '/api/users', '/api/swipes', '/api/matches', '/api/conversations', '/api/uploads',
   '/api/discovery', '/api/likes', '/api/notifications', '/api/devices', '/api/moments',
@@ -130,6 +129,10 @@ for (const page of PAGES) {
 }
 const shareable = await get('/@amara');
 check(shareable.status === 200 && /<!DOCTYPE html/i.test(shareable.body), `/@username renders the public profile shell (got ${shareable.status})`);
+const maximumHandle = await get(`/@${'a'.repeat(30)}`);
+check(maximumHandle.status === 200 && /<!DOCTYPE html/i.test(maximumHandle.body), 'a valid 30-character handle fits the database/API limit and still routes');
+const overlongHandle = await get(`/@${'a'.repeat(31)}`);
+check(overlongHandle.status === 404, `a 31-character handle falls through to 404 (got ${overlongHandle.status})`);
 const bogusHandle = await get('/@not-a-handle!');
 check(bogusHandle.status === 404, `an invalid handle shape falls through to 404 (got ${bogusHandle.status})`);
 
@@ -148,7 +151,7 @@ for (const page of PAGES) {
   }
 }
 const list = [...refs].sort();
-check(list.length > 5, `${list.length} distinct local assets referenced across the 15 pages`);
+check(list.length > 5, `${list.length} distinct local assets referenced across the 17 pages`);
 let broken = 0;
 const brokenList = [];
 for (const url of list) {
