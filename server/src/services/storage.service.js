@@ -71,8 +71,9 @@ export class LocalDiskStorage {
     } catch (err) {
       if (err.code === 'ENOENT') return false;
       if (err.message?.startsWith('Refusing to access path')) {
-        log.warn('blocked unlink outside root', { key });
-        return false;
+        log.warn('blocked unlink outside root', { code: 'PATH_OUTSIDE_STORAGE' });
+        err.code = 'PATH_OUTSIDE_STORAGE';
+        throw err;
       }
       throw err;
     }

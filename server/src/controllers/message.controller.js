@@ -10,7 +10,6 @@ import {
 import * as messageService from '../services/message.service.js';
 import * as locationService from '../services/location.service.js';
 import { inspectMessage } from '../utils/safety.js';
-import { purgeFiles } from '../jobs/cleanup.js';
 import { getIo } from '../sockets/index.js';
 import { env } from '../config/env.js';
 
@@ -123,7 +122,7 @@ export const checkMessage = asyncHandler(async (req, res) => {
 export const clearChat = asyncHandler(async (req, res) => {
   const conversationId = parseOrThrow(numericIdSchema, req.params.id);
   const result = await messageService.clearConversation(conversationId, req.user.id);
-  const deletedFiles = await purgeFiles(result.files);
+  const deletedFiles = result.deletedFiles;
 
   const io = getIo();
   if (io) {

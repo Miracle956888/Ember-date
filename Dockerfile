@@ -37,6 +37,8 @@ RUN npm ci --omit=dev && npm cache clean --force
 COPY server ./server
 COPY db ./db
 COPY public ./public
+# Include only the two operator tools required in a production container.
+COPY scripts/bootstrap-admin.mjs scripts/deploy-check.mjs scripts/db-ping.mjs ./scripts/
 # The stylesheet built in stage 1 replaces whatever was copied above.
 COPY --from=builder /app/public/css/app.css ./public/css/app.css
 
@@ -49,8 +51,8 @@ EXPOSE 3000
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD curl -fsS http://127.0.0.1:3000/api/health || exit 1
 
-# Migrate before serving, but only when the schema is missing: db/schema.sql
-# recreates every table, so an unguarded run here would wipe the database on
-# every restart. --if-needed makes the first boot self-provisioning and every
-# later one a no-op, which is what a host that only knows `docker run` needs.
+# Apply pending ordered, checksummed migrations before serving. The normal
+# runner adopts a validated legacy baseline without replaying its DDL and applies
+# only missing versions on restart; --if-needed is retained as a compatibility
+# alias, not a destructive reset mode.
 CMD ["sh", "-c", "node db/migrate.js --if-needed && exec node server/server.js"]

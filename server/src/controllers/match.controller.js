@@ -1,7 +1,6 @@
 import { asyncHandler } from '../utils/errors.js';
 import { parseOrThrow, numericIdSchema } from '../utils/validators.js';
 import * as matchService from '../services/match.service.js';
-import { purgeFiles } from '../jobs/cleanup.js';
 import { getIo } from '../sockets/index.js';
 
 export const listMatches = asyncHandler(async (req, res) => {
@@ -26,8 +25,7 @@ export const unmatch = asyncHandler(async (req, res) => {
   const matchId = parseOrThrow(numericIdSchema, req.params.id);
   const result = await matchService.unmatch(matchId, req.user.id);
 
-  // Cascade removed the rows; now remove the bytes.
-  const deletedFiles = await purgeFiles(result.files);
+  const deletedFiles = result.deletedFiles;
 
   const io = getIo();
   if (io) {

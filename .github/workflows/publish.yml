@@ -11,9 +11,8 @@ name: Publish image
 #   docker run -d --env-file /opt/ember/.env -v ember-uploads:/app/uploads \
 #     -p 127.0.0.1:3000:3000 ghcr.io/OWNER/ember-date:v1.1.0
 #
-# (The published image runs `node db/migrate.js --if-needed` at start: it
-# provisions the schema on the first boot of an empty database and no-ops after
-# that, so it is safe with compose, with a bare `docker run`, or standalone.)
+# (The published image runs the ordered migration runner before serving. It
+# applies only pending versions on each release; it never resets the schema.)
 #
 # Set these to also roll a VPS onto the image automatically. Until DEPLOY_HOST is
 # set the deploy job never runs, so this workflow is not half-configured by default:

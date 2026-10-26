@@ -8,6 +8,7 @@ import { badRequest, conflict, notFound, tooMany } from '../utils/errors.js';
 import logger from '../utils/logger.js';
 import { matchReasons } from './reasons.service.js';
 import { notify } from './notification.service.js';
+import { env } from '../config/env.js';
 
 /** At most this many interests may be selected. Mirrors interestsSchema. */
 export const MAX_INTERESTS = 8;
@@ -150,10 +151,10 @@ export async function setPrompts(userId, prompts) {
 }
 
 /* ------------------------------------------------------------------ *
- * Photo verification (selfie gesture challenge)
+ * Photo verification (short-lived challenge + private manual review)
  * ------------------------------------------------------------------ */
 
-/** Poses we may ask for. Chosen at random so a saved selfie cannot be replayed. */
+/** Poses are chosen unpredictably; only an admin receives the stored evidence. */
 export const VERIFICATION_GESTURES = [
   { gesture: 'peace', instruction: 'Hold up a peace sign next to your face' },
   { gesture: 'thumbs_up', instruction: 'Give a thumbs up' },
@@ -162,15 +163,53 @@ export const VERIFICATION_GESTURES = [
   { gesture: 'open_palm', instruction: 'Show an open palm beside your cheek' },
   { gesture: 'wave', instruction: 'Wave at the camera' }
 ];
+export const VERIFICATION_CHALLENGE_TTL_MIN = 10;
+const VERIFICATION_CHALLENGE_MAX_PER_DAY = 5;
 
-/** Issue a random pose challenge. */
+function hashVerificationToken(token) {
+  return crypto.createHash('sha256').update(String(token)).digest('hex');
+}
+
+/** Issue a one-use, ten-minute challenge. Only the token hash is persisted. */
 export async function requestVerification(userId) {
   const user = await queryOne('SELECT is_verified FROM users WHERE id = ? LIMIT 1', [userId]);
   if (!user) throw notFound('User not found.');
   if (user.is_verified) throw conflict('You are already verified.');
 
+  const pending = await queryOne(
+    "SELECT id FROM verifications WHERE user_id = ? AND status = 'pending' LIMIT 1", [userId]
+  );
+  if (pending) throw conflict('Your photo verification is awaiting review.');
+
+  const recent = await queryOne(
+    `SELECT COUNT(*) AS n FROM verification_challenges
+      WHERE user_id = ? AND created_at >= DATE_SUB(NOW(), INTERVAL 1 DAY)`, [userId]
+  );
+  if (Number(recent?.n || 0) >= VERIFICATION_CHALLENGE_MAX_PER_DAY) {
+    throw tooMany('Too many photo-verification attempts. Try again tomorrow.');
+  }
+
   const pick = VERIFICATION_GESTURES[crypto.randomInt(0, VERIFICATION_GESTURES.length)];
-  return { gesture: pick.gesture, instruction: pick.instruction };
+  const challengeId = crypto.randomUUID();
+  const challengeToken = crypto.randomBytes(32).toString('base64url');
+  await withTransaction(async (conn) => {
+    await conn.execute(
+      'UPDATE verification_challenges SET used_at = NOW() WHERE user_id = ? AND used_at IS NULL', [userId]
+    );
+    await conn.execute(
+      `INSERT INTO verification_challenges (challenge_id, user_id, token_hash, gesture, expires_at)
+       VALUES (?, ?, ?, ?, DATE_ADD(NOW(), INTERVAL ? MINUTE))`,
+      [challengeId, userId, hashVerificationToken(challengeToken), pick.gesture, VERIFICATION_CHALLENGE_TTL_MIN]
+    );
+  });
+
+  return {
+    challengeId,
+    challengeToken,
+    gesture: pick.gesture,
+    instruction: pick.instruction,
+    expiresInMinutes: VERIFICATION_CHALLENGE_TTL_MIN
+  };
 }
 
 /** Where a user stands across all three tiers. */
@@ -203,47 +242,63 @@ export async function getVerificationStatus(userId) {
   };
 }
 
-/**
- * Record a verification submission.
- *
- * There is no face-matching model in this stack, so the check is a recorded
- * liveness challenge rather than biometric proof: a random pose the user could
- * not have prepared in advance. The selfie is deleted by the caller once the
- * row is written — it is evidence, not profile content.
- */
-export async function submitVerification(userId, { gesture, filePath }) {
-  const known = VERIFICATION_GESTURES.some((g) => g.gesture === gesture);
-  if (!known) throw badRequest('Unknown verification pose.');
-
-  const user = await queryOne('SELECT is_verified FROM users WHERE id = ? LIMIT 1', [userId]);
-  if (!user) throw notFound('User not found.');
-  if (user.is_verified) throw conflict('You are already verified.');
-
-  await withTransaction(async (conn) => {
-    await conn.execute(
-      `INSERT INTO verifications (user_id, gesture, file_path, status, reviewed_at)
-       VALUES (?, ?, ?, 'approved', NOW())`,
-      [userId, gesture, filePath]
+/** Validate the issued challenge and store evidence as pending, never approved. */
+export async function submitVerification(userId, { challengeId, challengeToken, filePath }) {
+  if (!/^verification\/[a-f0-9-]{36}\.(?:jpe?g|webp)$/i.test(String(filePath || ''))) {
+    throw badRequest('That verification image could not be stored safely.');
+  }
+  const expectedTokenHash = hashVerificationToken(challengeToken);
+  const submission = await withTransaction(async (conn) => {
+    const [challenges] = await conn.execute(
+      `SELECT challenge_id, token_hash, gesture
+         FROM verification_challenges
+        WHERE challenge_id = ? AND user_id = ? AND used_at IS NULL AND expires_at > NOW()
+        LIMIT 1 FOR UPDATE`,
+      [challengeId, userId]
     );
-    await conn.execute('UPDATE users SET is_verified = 1, verified_at = NOW() WHERE id = ?', [userId]);
+    const challenge = challenges[0];
+    if (!challenge) throw badRequest('That photo-verification challenge expired. Request a new one.');
+
+    const supplied = Buffer.from(expectedTokenHash, 'hex');
+    const expected = Buffer.from(challenge.token_hash, 'hex');
+    if (supplied.length !== expected.length || !crypto.timingSafeEqual(supplied, expected)) {
+      throw badRequest('That photo-verification challenge is invalid. Request a new one.');
+    }
+
+    const [users] = await conn.execute('SELECT is_verified FROM users WHERE id = ? FOR UPDATE', [userId]);
+    const user = users[0];
+    if (!user) throw notFound('User not found.');
+    if (user.is_verified) throw conflict('You are already verified.');
+    const [pending] = await conn.execute(
+      "SELECT id FROM verifications WHERE user_id = ? AND status = 'pending' LIMIT 1 FOR UPDATE", [userId]
+    );
+    if (pending.length) throw conflict('Your photo verification is awaiting review.');
+
+    await conn.execute(
+      'UPDATE verification_challenges SET used_at = NOW() WHERE challenge_id = ? AND used_at IS NULL',
+      [challengeId]
+    );
+    const [inserted] = await conn.execute(
+      `INSERT INTO verifications (user_id, challenge_id, gesture, file_path, status)
+       VALUES (?, ?, ?, ?, 'pending')`,
+      [userId, challengeId, challenge.gesture, filePath]
+    );
+    return { id: Number(inserted.insertId), gesture: challenge.gesture };
   });
 
   await refreshCompletion(userId).catch(() => {});
-
-  // Account-critical, so it bypasses preference gating by design (the
-  // `verification` kind maps to a null pref column).
   await notify({
     userId,
     kind: 'verification',
     targetType: 'profile',
     targetId: userId,
-    href: '/profile',
-    body: 'Your profile is verified. The check now shows on your profile.',
+    href: '/settings',
+    body: 'Your photo verification was submitted and is awaiting manual review.',
     groupKey: `verification:profile:${userId}`
-  });
+  }).catch(() => {});
 
-  logger.info('[verify] photo verification approved', { userId, gesture });
-  return { isVerified: true, verifiedAt: new Date().toISOString() };
+  logger.info('photo verification submitted for review', { userId, verificationId: submission.id });
+  return { status: 'pending', verificationId: submission.id, isVerified: false };
 }
 
 /* ------------------------------------------------------------------ *
@@ -379,76 +434,167 @@ export function verificationTiers(user) {
 export const VERIFY_TTL_MIN = 15;
 export const VERIFY_MAX_ATTEMPTS = 5;
 
-function hashToken(token) {
-  return crypto.createHash('sha256').update(String(token)).digest('hex');
+/** Keyed hashes prevent a database-only attacker from cheaply enumerating 6-digit codes. */
+function hashVerificationCode(code) {
+  return crypto
+    .createHmac('sha256', env.JWT.refreshSecret)
+    .update(`ember-verification-code-v1\0${String(code)}`)
+    .digest('hex');
 }
 
 /**
  * Issue an email or phone verification code.
- * The plaintext code is returned to the caller (the controller decides whether
- * it may be echoed — never in production) and only its hash is persisted.
+ * The plaintext code is returned only to the controller's encrypted delivery
+ * queue; it is never logged or included in an API response. Only a keyed hash is
+ * persisted. The user-row lock serializes sends and preserves every issuance
+ * inside the rolling rate-limit window while revoking the prior live code.
  */
 export async function issueVerification(userId, kind, target) {
   if (!['email', 'phone'].includes(kind)) throw badRequest('Unknown verification type.');
 
-  const recent = await queryOne(
-    `SELECT COUNT(*) AS n FROM verification_tokens
-      WHERE user_id = ? AND kind = ? AND created_at > (NOW() - INTERVAL 15 MINUTE)`,
-    [userId, kind]
-  );
-  if (Number(recent?.n || 0) >= 5) throw tooMany('Too many codes requested. Try again in a few minutes.');
-
   // A 6-digit code is the right ergonomics for phone; reuse it for email so the
   // UI is one component. Entropy is low, so attempts are capped hard below.
   const code = String(crypto.randomInt(0, 1_000_000)).padStart(6, '0');
+  const tokenHash = hashVerificationCode(code);
 
-  await execute('DELETE FROM verification_tokens WHERE user_id = ? AND kind = ? AND used_at IS NULL', [userId, kind]);
-  await execute(
-    `INSERT INTO verification_tokens (user_id, kind, target, token_hash, expires_at)
-     VALUES (?, ?, ?, ?, (NOW() + INTERVAL ? MINUTE))`,
-    [userId, kind, target, hashToken(code), VERIFY_TTL_MIN]
-  );
+  await withTransaction(async (conn) => {
+    const [users] = await conn.execute('SELECT id, email FROM users WHERE id = ? FOR UPDATE', [userId]);
+    const user = users[0];
+    if (!user) throw notFound('Account not found.');
+    if (kind === 'email' && user.email !== target) {
+      throw badRequest('The email address changed. Refresh and request a new code.');
+    }
+
+    if (kind === 'phone') {
+      const [claimed] = await conn.execute(
+        'SELECT id FROM users WHERE phone = ? AND id <> ? LIMIT 1',
+        [target, userId]
+      );
+      if (claimed.length) throw conflict('This phone number cannot be verified.');
+    }
+
+    const [recent] = await conn.execute(
+      `SELECT COUNT(*) AS n FROM verification_tokens
+        WHERE user_id = ? AND kind = ? AND created_at > (NOW() - INTERVAL 15 MINUTE)`,
+      [userId, kind]
+    );
+    if (Number(recent[0]?.n || 0) >= 5) {
+      throw tooMany('Too many codes requested. Try again in a few minutes.');
+    }
+
+    // These rows are older than the full rolling limit and their codes have
+    // expired. Pruning them cannot lower the count above, which included every
+    // issuance in the active window regardless of consumption/revocation.
+    await conn.execute(
+      'DELETE FROM verification_tokens WHERE user_id = ? AND kind = ? AND created_at <= DATE_SUB(NOW(), INTERVAL 15 MINUTE)',
+      [userId, kind]
+    );
+    await conn.execute(
+      `UPDATE verification_tokens
+          SET revoked_at = NOW()
+        WHERE user_id = ? AND kind = ? AND used_at IS NULL AND revoked_at IS NULL`,
+      [userId, kind]
+    );
+    await conn.execute(
+      `INSERT INTO verification_tokens (user_id, kind, target, token_hash, expires_at)
+       VALUES (?, ?, ?, ?, (NOW() + INTERVAL ? MINUTE))`,
+      [userId, kind, target, tokenHash, VERIFY_TTL_MIN]
+    );
+  });
+
   logger.info('[verify] code issued', { userId, kind });
   return { code, expiresInMinutes: VERIFY_TTL_MIN };
 }
 
-/** Consume a code. Wrong codes burn an attempt; five wrong kills the token. */
+/** Consume a code exactly once. Wrong codes burn an attempt; the fifth revokes it without erasing send history. */
 export async function confirmVerification(userId, kind, code) {
-  const row = await queryOne(
-    `SELECT id, target, token_hash, attempts FROM verification_tokens
-      WHERE user_id = ? AND kind = ? AND used_at IS NULL AND expires_at > NOW()
-      ORDER BY id DESC LIMIT 1`,
-    [userId, kind]
-  );
-  if (!row) throw badRequest('That code has expired. Request a new one.', { code: 'VERIFY_EXPIRED' });
+  if (!['email', 'phone'].includes(kind)) throw badRequest('Unknown verification type.');
 
-  if (row.attempts >= VERIFY_MAX_ATTEMPTS) {
-    await execute('DELETE FROM verification_tokens WHERE id = ?', [row.id]);
-    throw tooMany('Too many incorrect attempts. Request a new code.');
+  let result;
+  try {
+    result = await withTransaction(async (conn) => {
+      // All issue/consume paths lock this row first, making code replacement,
+      // attempt increments and successful use serializable per account.
+      const [users] = await conn.execute('SELECT id, email FROM users WHERE id = ? FOR UPDATE', [userId]);
+      const user = users[0];
+      if (!user) return { error: 'expired' };
+
+      const [rows] = await conn.execute(
+        `SELECT id, target, token_hash, attempts FROM verification_tokens
+          WHERE user_id = ? AND kind = ? AND used_at IS NULL AND revoked_at IS NULL AND expires_at > NOW()
+          ORDER BY id DESC LIMIT 1 FOR UPDATE`,
+        [userId, kind]
+      );
+      const row = rows[0];
+      if (!row) return { error: 'expired' };
+
+      const attempts = Number(row.attempts || 0);
+      if (attempts >= VERIFY_MAX_ATTEMPTS) {
+        await conn.execute('UPDATE verification_tokens SET revoked_at = NOW() WHERE id = ?', [row.id]);
+        return { error: 'too_many' };
+      }
+
+      const supplied = hashVerificationCode(code);
+      const expected = String(row.token_hash || '');
+      const matches =
+        supplied.length === expected.length &&
+        crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
+      if (!matches) {
+        if (attempts + 1 >= VERIFY_MAX_ATTEMPTS) {
+          await conn.execute('UPDATE verification_tokens SET revoked_at = NOW() WHERE id = ?', [row.id]);
+          return { error: 'too_many' };
+        }
+        await conn.execute('UPDATE verification_tokens SET attempts = attempts + 1 WHERE id = ?', [row.id]);
+        return { error: 'invalid' };
+      }
+
+      if (kind === 'email' && row.target !== user.email) {
+        await conn.execute('UPDATE verification_tokens SET revoked_at = NOW() WHERE id = ?', [row.id]);
+        return { error: 'expired' };
+      }
+      if (kind === 'phone') {
+        const [claimed] = await conn.execute(
+          'SELECT id FROM users WHERE phone = ? AND id <> ? LIMIT 1',
+          [row.target, userId]
+        );
+        if (claimed.length) {
+          await conn.execute('UPDATE verification_tokens SET revoked_at = NOW() WHERE id = ?', [row.id]);
+          return { error: 'phone_claimed' };
+        }
+      }
+
+      const [consumed] = await conn.execute(
+        'UPDATE verification_tokens SET used_at = NOW() WHERE id = ? AND used_at IS NULL AND revoked_at IS NULL',
+        [row.id]
+      );
+      if (consumed.affectedRows !== 1) return { error: 'expired' };
+
+      if (kind === 'email') {
+        await conn.execute('UPDATE users SET email_verified_at = NOW() WHERE id = ?', [userId]);
+      } else {
+        await conn.execute('UPDATE users SET phone = ?, phone_verified_at = NOW() WHERE id = ?', [row.target, userId]);
+      }
+      return { verified: true, kind };
+    });
+  } catch (error) {
+    if (kind === 'phone' && error.code === 'ER_DUP_ENTRY') {
+      throw conflict('This phone number cannot be verified.');
+    }
+    throw error;
   }
 
-  const supplied = hashToken(code);
-  const expected = row.token_hash;
-  const ok =
-    supplied.length === expected.length &&
-    crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(expected));
-
-  if (!ok) {
-    await execute('UPDATE verification_tokens SET attempts = attempts + 1 WHERE id = ?', [row.id]);
+  if (result.error === 'expired') {
+    throw badRequest('That code has expired. Request a new one.', { code: 'VERIFY_EXPIRED' });
+  }
+  if (result.error === 'invalid') {
     throw badRequest('That code is not correct.', { code: 'VERIFY_INVALID' });
   }
-
-  await withTransaction(async (conn) => {
-    await conn.execute('UPDATE verification_tokens SET used_at = NOW() WHERE id = ?', [row.id]);
-    if (kind === 'email') {
-      await conn.execute('UPDATE users SET email_verified_at = NOW() WHERE id = ?', [userId]);
-    } else {
-      await conn.execute('UPDATE users SET phone = ?, phone_verified_at = NOW() WHERE id = ?', [row.target, userId]);
-    }
-  });
+  if (result.error === 'too_many') {
+    throw tooMany('Too many incorrect attempts. Request a new code.');
+  }
+  if (result.error === 'phone_claimed') throw conflict('This phone number cannot be verified.');
 
   await refreshCompletion(userId).catch(() => {});
-
   await notify({
     userId,
     kind: 'verification',
@@ -457,7 +603,7 @@ export async function confirmVerification(userId, kind, code) {
     href: '/settings',
     body: kind === 'email' ? 'Your email address is verified.' : 'Your phone number is verified.',
     groupKey: `verification:${kind}:${userId}`
-  });
+  }).catch(() => {});
 
   logger.info('[verify] confirmed', { userId, kind });
   return { verified: true, kind };

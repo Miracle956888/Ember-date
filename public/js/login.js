@@ -2,6 +2,7 @@
 import { api, setCsrfToken, ApiError } from '/js/api.js';
 import { $, toast, withBusy } from '/js/ui.js';
 import { redirectIfAuthed } from '/js/app-shell.js';
+import { safeReturnPath } from '/js/navigation.js';
 import { initThemeToggle } from '/js/theme.js';
 
 redirectIfAuthed();
@@ -72,7 +73,7 @@ form.addEventListener('submit', async (e) => {
     const data = await api.login(email, password);
     setCsrfToken(data.csrfToken);
     const next = new URLSearchParams(location.search).get('next');
-    location.replace(next && next.startsWith('/') ? next : '/app');
+    location.replace(safeReturnPath(next));
   } catch (err) {
     restore();
     if (err instanceof ApiError && err.details) {

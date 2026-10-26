@@ -7,13 +7,14 @@ import cors from 'cors';
 import cookieParser from 'cookie-parser';
 
 import { env } from './src/config/env.js';
+import { PAGE_NAMES, isPublicHandleRouteCandidate } from './src/config/pages.js';
 import { logger } from './src/utils/logger.js';
 import { AppError } from './src/utils/errors.js';
 import { assertDbConnection, closePool } from './src/db/pool.js';
 import { storage } from './src/services/storage.service.js';
 import { checkFfmpeg } from './src/services/upload.service.js';
 import { globalLimiter } from './src/middleware/rateLimit.js';
-import { requireAuth } from './src/middleware/auth.js';
+import { optionalAuth, requireAuth } from './src/middleware/auth.js';
 import { forceHttps } from './src/middleware/https.js';
 import { resetAllPresence } from './src/services/auth.service.js';
 
@@ -35,6 +36,7 @@ import { iceServers } from './src/controllers/message.controller.js';
 
 import { initSockets, closeSockets } from './src/sockets/index.js';
 import { startCleanupJob, stopCleanupJob } from './src/jobs/cleanup.js';
+import { startDeliveryJob, stopDeliveryJob } from './src/services/delivery.service.js';
 
 const log = logger.child('server');
 const app = express();
@@ -116,7 +118,9 @@ app.use((req, res, next) => {
     if (req.path.startsWith('/socket.io')) return;
     const ms = Date.now() - started;
     const level = res.statusCode >= 500 ? 'error' : res.statusCode >= 400 ? 'warn' : 'debug';
-    logger[level](`${req.method} ${req.originalUrl} ${res.statusCode}`, { ms });
+    // Query strings can carry bearer credentials (for example a third-party
+    // client may still submit a reset token as a query param). Log path only.
+    logger[level](`${req.method} ${req.path} ${res.statusCode}`, { ms });
   });
   next();
 });
@@ -149,7 +153,7 @@ app.use('/api/reports', reportRoutes);
 app.use('/api/admin', adminRoutes);
 app.get('/api/media/:id', requireAuth, serveMedia);
 app.get('/api/social-media/:name', requireAuth, serveSocialMedia);
-app.get('/api/photos/:filename', requireAuth, servePhoto);
+app.get('/api/photos/:filename', optionalAuth, servePhoto);
 app.get('/api/ice-servers', requireAuth, iceServers);
 
 // ----------------------------------------------------------- static frontend
@@ -175,10 +179,6 @@ app.use(express.static(env.PUBLIC_DIR, staticOptions));
 // onto <html> before the first byte reaches the browser. A strict CSP
 // (script-src 'self') rules out the usual inline anti-FOUC snippet, so the
 // class is applied server-side instead -- no flash of white on a dark reload.
-const PAGES = [
-  'index', 'login', 'register', 'app', 'matches', 'chats', 'chat', 'call',
-  'profile', 'nearby', 'likes', 'settings', 'u', 'moments', 'admin'
-];
 const pageCache = new Map();
 
 function readPage(file) {
@@ -208,7 +208,7 @@ export function sendPage(file, req, res, next) {
     .catch(next);
 }
 
-for (const page of PAGES) {
+for (const page of PAGE_NAMES) {
   app.get(`/${page === 'index' ? '' : page}`, (req, res, next) => {
     const file = path.join(env.PUBLIC_DIR, `${page}.html`);
     fs.access(file, fs.constants.R_OK, (err) => (err ? next() : sendPage(file, req, res, next)));
@@ -220,7 +220,7 @@ for (const page of PAGES) {
 // page loop so it cannot shadow a real page, and kept deliberately strict so
 // only valid handle shapes reach it -- anything else falls through to the 404.
 app.get('/@:username', (req, res, next) => {
-  if (!/^[a-zA-Z0-9._]{3,20}$/.test(req.params.username)) return next();
+  if (!isPublicHandleRouteCandidate(req.params.username)) return next();
   const file = path.join(env.PUBLIC_DIR, 'u.html');
   return fs.access(file, fs.constants.R_OK, (err) => (err ? next() : sendPage(file, req, res, next)));
 });
@@ -243,7 +243,7 @@ app.use((err, req, res, _next) => {
   if (status >= 500) {
     log.error('unhandled error', { message: err.message, stack: err.stack, path: req.originalUrl });
   } else {
-    log.warn('request error', { message: err.message, status, path: req.originalUrl });
+    log.warn('request error', { message: err.message, status, path: req.path });
   }
 
   if (err.message === 'Not allowed by CORS') {
@@ -269,7 +269,12 @@ async function start() {
   await resetAllPresence().catch(() => {});
 
   initSockets(server);
-  startCleanupJob();
+  if (env.RUN_BACKGROUND_JOBS) {
+    startCleanupJob();
+    startDeliveryJob();
+  } else {
+    log.warn('in-process background jobs disabled; configure host cron for cleanup and delivery');
+  }
 
   await new Promise((resolve) => server.listen(env.PORT, '0.0.0.0', resolve));
   log.info(`listening on http://0.0.0.0:${env.PORT}`, {
@@ -293,6 +298,7 @@ async function shutdown(signal) {
 
   try {
     stopCleanupJob();
+    stopDeliveryJob();
     await closeSockets();
     await new Promise((resolve) => server.close(resolve));
     await closePool();

@@ -400,13 +400,7 @@ function composer() {
             const media = [];
             for (const file of files) {
               const up = await api.uploadSocial(file);
-              media.push({
-                kind: up.kind,
-                url: up.url,
-                thumbUrl: up.thumbUrl,
-                fileKey: up.fileKey,
-                thumbKey: up.thumbKey
-              });
+              media.push({ uploadId: up.uploadId });
             }
             await api.createPost({ body: body || null, media, poll });
           } catch (err) {

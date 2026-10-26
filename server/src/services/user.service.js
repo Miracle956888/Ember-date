@@ -1,4 +1,5 @@
-import { query, queryOne, execute } from '../db/pool.js';
+import { query, queryOne, execute, withTransaction } from '../db/pool.js';
+import { MEDIA_DELETE_REASON, enqueueMediaDeletion, removeQueuedMedia } from './media-deletion.service.js';
 import { notFound, badRequest, conflict } from '../utils/errors.js';
 import { toPublicUser, calcAge, isUsernameAvailable } from './auth.service.js';
 import { getUserInterests, getPrompts, sharedInterests, refreshCompletion } from './profile.service.js';
@@ -490,44 +491,74 @@ export async function listPhotos(userId) {
 }
 
 export async function addPhoto(userId, url, thumbUrl = null) {
-  const [{ count }] = await query('SELECT COUNT(*) AS count FROM user_photos WHERE user_id = ?', [userId]);
-  if (Number(count) >= MAX_PHOTOS) {
-    throw badRequest(`You can have up to ${MAX_PHOTOS} photos. Remove one first.`);
-  }
-  const res = await execute(
-    'INSERT INTO user_photos (user_id, url, thumb_url, position) VALUES (?,?,?,?)',
-    [userId, url, thumbUrl || null, Number(count)]
-  );
-  // First photo becomes the avatar automatically.
-  if (Number(count) === 0) {
-    await execute('UPDATE users SET avatar_url = ? WHERE id = ?', [url, userId]);
-  }
-  return { id: Number(res.insertId), url, thumbUrl: thumbUrl || null, position: Number(count) };
+  return withTransaction(async (conn) => {
+    const [owners] = await conn.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+    if (!owners.length) throw notFound('Account not found.');
+    const [photos] = await conn.execute('SELECT COUNT(*) AS count FROM user_photos WHERE user_id = ?', [userId]);
+    const count = Number(photos[0]?.count || 0);
+    if (count >= MAX_PHOTOS) {
+      throw badRequest(`You can have up to ${MAX_PHOTOS} photos. Remove one first.`);
+    }
+    const [res] = await conn.execute(
+      'INSERT INTO user_photos (user_id, url, thumb_url, position) VALUES (?,?,?,?)',
+      [userId, url, thumbUrl || null, count]
+    );
+    // First photo becomes the avatar automatically.
+    if (count === 0) await conn.execute('UPDATE users SET avatar_url = ? WHERE id = ?', [url, userId]);
+    return { id: Number(res.insertId), url, thumbUrl: thumbUrl || null, position: count };
+  });
+}
+
+function profilePhotoKeys(photo) {
+  const basename = (value) => {
+    const prefix = '/api/photos/';
+    const url = String(value || '');
+    if (!url.startsWith(prefix)) return null;
+    const name = url.slice(prefix.length);
+    return /^[A-Za-z0-9._-]+$/.test(name) ? name : null;
+  };
+  const original = basename(photo.url);
+  const thumbnail = basename(photo.thumb_url);
+  return [original ? `photos/${original}` : null, thumbnail ? `thumbs/${thumbnail}` : null].filter(Boolean);
 }
 
 export async function deletePhoto(userId, photoId) {
-  const photo = await queryOne(
-    'SELECT id, url, thumb_url FROM user_photos WHERE id = ? AND user_id = ? LIMIT 1',
-    [photoId, userId]
-  );
-  if (!photo) throw notFound('Photo not found.');
+  const result = await withTransaction(async (conn) => {
+    const [owners] = await conn.execute('SELECT id FROM users WHERE id = ? FOR UPDATE', [userId]);
+    if (!owners.length) throw notFound('Account not found.');
+    const [rows] = await conn.execute(
+      'SELECT id, url, thumb_url FROM user_photos WHERE id = ? AND user_id = ? LIMIT 1 FOR UPDATE',
+      [photoId, userId]
+    );
+    const photo = rows[0];
+    if (!photo) throw notFound('Photo not found.');
+    const keys = profilePhotoKeys(photo);
+    await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.profilePhotoRemoved);
+    await conn.execute('DELETE FROM user_photos WHERE id = ? AND user_id = ?', [photoId, userId]);
 
-  await execute('DELETE FROM user_photos WHERE id = ? AND user_id = ?', [photoId, userId]);
+    // Re-pack positions so they stay 0..n-1.
+    const [remaining] = await conn.execute('SELECT id FROM user_photos WHERE user_id = ? ORDER BY position ASC', [userId]);
+    for (let i = 0; i < remaining.length; i += 1) {
+      await conn.execute('UPDATE user_photos SET position = ? WHERE id = ?', [i, remaining[i].id]);
+    }
 
-  // Re-pack positions so they stay 0..n-1.
-  const remaining = await query('SELECT id FROM user_photos WHERE user_id = ? ORDER BY position ASC', [userId]);
-  for (let i = 0; i < remaining.length; i += 1) {
-    await execute('UPDATE user_photos SET position = ? WHERE id = ?', [i, remaining[i].id]);
-  }
+    const [users] = await conn.execute('SELECT avatar_url FROM users WHERE id = ? LIMIT 1', [userId]);
+    if (users[0]?.avatar_url === photo.url) {
+      const [next] = await conn.execute(
+        'SELECT url FROM user_photos WHERE user_id = ? ORDER BY position ASC LIMIT 1', [userId]
+      );
+      await conn.execute('UPDATE users SET avatar_url = ? WHERE id = ?', [next[0]?.url ?? null, userId]);
+    }
+    return { photo, keys };
+  });
 
-  const user = await queryOne('SELECT avatar_url FROM users WHERE id = ? LIMIT 1', [userId]);
-  if (user?.avatar_url === photo.url) {
-    const next = await queryOne('SELECT url FROM user_photos WHERE user_id = ? ORDER BY position ASC LIMIT 1', [
-      userId
-    ]);
-    await execute('UPDATE users SET avatar_url = ? WHERE id = ?', [next?.url ?? null, userId]);
-  }
-  return { url: photo.url, thumbUrl: photo.thumb_url || null };
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.profilePhotoRemoved);
+  return {
+    url: result.photo.url,
+    thumbUrl: result.photo.thumb_url || null,
+    filesRemoved: removed.deletedFiles,
+    filesPending: removed.failedFiles
+  };
 }
 
 export async function reorderPhotos(userId, orderedIds) {
@@ -548,33 +579,56 @@ export async function reorderPhotos(userId, orderedIds) {
 
 // ------------------------------------------------------------ blocks/reports
 
+async function enqueueMatchMedia(conn, matchId) {
+  const [files] = await conn.execute(
+    `SELECT a.file_path, a.thumb_path FROM attachments a
+       JOIN messages msg ON msg.id = a.message_id
+       JOIN conversations c ON c.id = msg.conversation_id
+      WHERE c.match_id = ? FOR UPDATE`,
+    [matchId]
+  );
+  const keys = files.flatMap((file) => [file.file_path, file.thumb_path].filter(Boolean));
+  await enqueueMediaDeletion(conn, keys, MEDIA_DELETE_REASON.contentRemoved);
+  await conn.execute('DELETE FROM matches WHERE id = ?', [matchId]);
+  return keys;
+}
+
 export async function blockUser(blockerId, blockedId) {
-  if (blockerId === blockedId) throw badRequest('You cannot block yourself.');
-  await execute(
-    'INSERT INTO blocks (blocker_id, blocked_id) VALUES (?,?) ON DUPLICATE KEY UPDATE created_at = created_at',
-    [blockerId, blockedId]
-  );
-  // Blocking also unmatches: find and remove any match between the two.
-  const a = Math.min(blockerId, blockedId);
-  const b = Math.max(blockerId, blockedId);
-  const match = await queryOne('SELECT id FROM matches WHERE user_a_id = ? AND user_b_id = ? LIMIT 1', [a, b]);
-  if (match) await execute('DELETE FROM matches WHERE id = ?', [match.id]);
+  if (Number(blockerId) === Number(blockedId)) throw badRequest('You cannot block yourself.');
+  const result = await withTransaction(async (conn) => {
+    await conn.execute(
+      'INSERT INTO blocks (blocker_id, blocked_id) VALUES (?,?) ON DUPLICATE KEY UPDATE created_at = created_at',
+      [blockerId, blockedId]
+    );
+    // Blocking also unmatches: queue chat media before the match cascade.
+    const a = Math.min(Number(blockerId), Number(blockedId));
+    const b = Math.max(Number(blockerId), Number(blockedId));
+    const [matches] = await conn.execute(
+      'SELECT id FROM matches WHERE user_a_id = ? AND user_b_id = ? LIMIT 1 FOR UPDATE', [a, b]
+    );
+    const match = matches[0];
+    const keys = match ? await enqueueMatchMedia(conn, match.id) : [];
 
-  // A block must undo the whole relationship, not just hide it. Likes in both
-  // directions are removed so neither party keeps appearing in the other's
-  // "who liked you", and the notifications those likes generated go with them.
-  await execute(
-    `DELETE FROM content_likes
-      WHERE (user_id = ? AND owner_id = ?) OR (user_id = ? AND owner_id = ?)`,
-    [blockerId, blockedId, blockedId, blockerId]
-  );
-  await execute(
-    `DELETE FROM notifications
-      WHERE (user_id = ? AND actor_id = ?) OR (user_id = ? AND actor_id = ?)`,
-    [blockerId, blockedId, blockedId, blockerId]
-  );
-
-  return { blocked: true, matchRemoved: Boolean(match) };
+    // A block undoes the relationship, including its likes and notifications.
+    await conn.execute(
+      `DELETE FROM content_likes
+        WHERE (user_id = ? AND owner_id = ?) OR (user_id = ? AND owner_id = ?)`,
+      [blockerId, blockedId, blockedId, blockerId]
+    );
+    await conn.execute(
+      `DELETE FROM notifications
+        WHERE (user_id = ? AND actor_id = ?) OR (user_id = ? AND actor_id = ?)`,
+      [blockerId, blockedId, blockedId, blockerId]
+    );
+    return { matchRemoved: Boolean(match), keys };
+  });
+  const removed = await removeQueuedMedia(result.keys, MEDIA_DELETE_REASON.contentRemoved);
+  return {
+    blocked: true,
+    matchRemoved: result.matchRemoved,
+    deletedFiles: removed.deletedFiles,
+    pendingFiles: removed.failedFiles
+  };
 }
 
 /** Lift a block. Does NOT restore the deleted match — that is gone for good. */

@@ -1,12 +1,16 @@
 # V1 Implementation Progress
 
+> Chronological development log: status labels, suite counts and screenshots below
+> describe the phase when each entry was written, not the current release verdict.
+> Use `README.md`, `DEPLOY.md` and `TESTING.md` for current behavior and evidence.
+
 Audit: **`AUDIT-V1.md`** (7 sections, delivered before any code, as required).
 
 ## ✅ Phase 1 — Security & privacy hardening — COMPLETE
 
 | # | Item | Status | Evidence |
 |---|---|---|---|
-| 1 | **HIGH: `/api/photos/:filename` authorization** | Fixed | New `getPhotoForViewer()` resolves the basename to its owning row and enforces bidirectional block checks; orphaned files 404. Cache cut from 24 h to 5 min + `Vary: Cookie`. **6/6 assertions pass** (owner 200, other 200, anon 401, blocked 404, bogus 404). |
+| 1 | **HIGH: `/api/photos/:filename` authorization** | Updated | `getPhotoForViewer()` resolves the basename to an active profile owner, returns 404 for orphaned/suspended-profile photos, and enforces bidirectional block checks for signed-in viewers. Active public profiles load photos from signed-out share links; anonymous access cannot be associated with a block record. Cache stays private, short-lived, and varies by Cookie. Current DB-backed assertions live in `scripts/security-integration.mjs`; they require disposable MySQL CI. |
 | 2 | **HIGH: no password recovery** | Fixed | `password_resets` table stores only SHA-256 of the token. `POST /api/auth/forgot-password` + `/reset-password`, 30-min single-use tokens, all sessions revoked on change, identical response for known/unknown addresses. **7/7 assertions pass.** |
 | 3 | **LOW: username enumeration** | Fixed | Dedicated `usernameCheckLimiter` (20/min) replaces the shared 60/min search limiter on the unauthenticated availability endpoint. |
 | 4 | **LOW: no login audit / account lockout** | Fixed | `login_attempts` table; 10 failures per email per 15 min → 429, independent of IP. |

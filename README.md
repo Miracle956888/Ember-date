@@ -1,18 +1,24 @@
 # Ember — swipe, match, chat. Then it disappears.
 
-A production-ready one-to-one dating and chat web app. Swipe a deck of profiles,
-match, and talk in real time — but **every message and every uploaded file
-deletes itself 24 hours after it was sent**. Matched users can also place
-peer-to-peer video and voice calls.
+A one-to-one dating and chat web app. Swipe a deck of profiles, match, and talk
+in real time. Ephemeral messages and social media have a 24-hour retention
+window; profile photos are retained until the owner removes them or deletes the
+account. Matched users can also place peer-to-peer video and voice calls.
+
+> **Readiness notice:** this repository is under security and operations work.
+> The automated checks described below are not staging or production evidence.
+> Configure providers, test migrations on a restored staging copy, and complete
+> the open items in `DEPLOY.md` before handling real user data.
 
 Built with plain HTML, Tailwind CSS (CLI build), and vanilla JavaScript ES
 modules on the front end; Node.js, Express, Socket.IO and MySQL 8 on the back
 end. No SPA framework, no ORM, no CDN script tags.
 
 **Putting it on a public host:** [`DEPLOY.md`](DEPLOY.md) is the operator guide -
-which provider and why, every environment variable, TLS to a managed MySQL, and how
-to prove the running site is healthy (`npm run deploy:check`, then
-`npm run sweep -- --base https://your-url --auth --demo`).
+which provider and why, every environment variable, TLS to a managed MySQL, and
+how to verify a running site. For cPanel/Passenger, see [`CPANEL.md`](CPANEL.md)
+and check the provider's Node.js, WebSocket, process, storage, and network limits
+before choosing a plan.
 
 Provision a MySQL 8-compatible database first (TiDB Cloud Serverless or Aiven both
 have free tiers and speak the protocol this app uses), then this button reads
@@ -44,10 +50,11 @@ On a VPS instead, one command does the whole thing: `sudo SITE_ADDRESS=your.doma
 14. [Project structure](#project-structure)
 15. [API reference](#api-reference)
 16. [Socket.IO event contract](#socketio-event-contract)
-17. [Security notes](#security-notes)
-18. [Running with Docker](#running-with-docker)
-19. [Deploying to a public host](DEPLOY.md)
-20. [Troubleshooting](#troubleshooting)
+17. [Admin console and RBAC](#admin-console-and-rbac)
+18. [Security notes](#security-notes)
+19. [Running with Docker](#running-with-docker)
+20. [Deploying to a public host](DEPLOY.md)
+21. [Troubleshooting](#troubleshooting)
 
 ---
 
@@ -58,7 +65,7 @@ On a VPS instead, one command does the whole thing: `sudo SITE_ADDRESS=your.doma
 
 ```bash
 # 1. install dependencies
-npm install
+npm ci
 
 # 2. configure the environment
 cp .env.example .env
@@ -69,7 +76,7 @@ node -e "console.log('JWT_REFRESH_SECRET=' + require('crypto').randomBytes(32).t
 # 3. create the database (once)
 mysql -u root -p -e "CREATE DATABASE ephemeral_chat CHARACTER SET utf8mb4 COLLATE utf8mb4_0900_ai_ci;"
 
-# 4. apply the schema and load demo data
+# 4. apply all pending versioned migrations, then load LOCAL synthetic demo data
 npm run db:migrate
 npm run db:seed
 
@@ -79,12 +86,19 @@ npm run dev
 
 Open **http://localhost:3000** and sign in with any demo account below.
 
-For a production-style run:
+For a local production-mode build, run:
 
 ```bash
 npm run build:css
 npm start
 ```
+
+For any database with real data: take and verify a backup, rehearse the pending
+migrations on a recent isolated restore, then run `npm run db:migrate`. The normal
+runner applies numbered pending migrations and does not reset rows. Never run
+`npm run db:seed`, `npm run db:reset`, or `db/migrate.js --fresh` against a
+populated, staging, or production database. `--fresh` is only for a throwaway
+development database with both destructive-reset guards enabled.
 
 > **Note on MariaDB.** The canonical schema in `db/schema.sql` is written for
 > MySQL 8. `db/migrate.js` detects MariaDB and rewrites the incompatible
@@ -139,38 +153,73 @@ except the database credentials.
 | `JWT_ACCESS_SECRET` / `JWT_REFRESH_SECRET`   | random per boot         | **Set these**, or every restart invalidates all sessions     |
 | `MESSAGE_TTL_HOURS`                          | `24`                    | Message lifetime. Lower it to watch expiry quickly           |
 | `MAX_IMAGE_MB` / `MAX_VIDEO_MB`              | `10` / `50`             | Upload ceilings                                              |
-| `UPLOAD_DIR`                                 | `./uploads`             | Local storage root                                           |
+| `UPLOAD_DIR`                                 | `./uploads`             | Persistent local storage root; back it up with the database |
+| `SMTP_HOST` / `SMTP_PORT` / `SMTP_SECURE`     | empty / `587` / `false` | SMTP transport for password-reset and email-verification delivery |
+| `SMTP_USER` / `SMTP_PASSWORD` / `SMTP_FROM`   | empty                   | Optional SMTP auth and a provider-verified sender; never commit credentials |
+| `TWILIO_ACCOUNT_SID` / `TWILIO_AUTH_TOKEN` / `TWILIO_FROM_NUMBER` | empty | All three enable phone-verification SMS; keep credentials server-side |
 | `TURN_URL` / `TURN_USERNAME` / `TURN_CREDENTIAL` | empty               | Optional TURN relay for calls across strict NATs             |
 | `TRUST_PROXY`                                 | off (on in prod)        | Read `X-Forwarded-*` behind a proxy: real client IPs for rate limiting, and `req.secure` |
 | `FORCE_HTTPS`                                 | off                     | 301/308 upgrade to https behind that proxy. Needs `TRUST_PROXY`, or it refuses to start rather than loop |
 | `EXTRA_ORIGINS`                               | empty                   | Additional CORS-allowed origins, comma separated              |
-| `DB_SSL`                                      | off                     | `true` for TLS to the database. **Required** by TiDB Cloud Serverless and Aiven free MySQL |
-| `DB_SSL_CA` / `DB_SSL_REJECT_UNAUTHORIZED`     | unset / `true`          | Provider CA bundle path, and whether to verify the certificate  |
+| `DB_SSL`                                      | off                     | `true` for TLS to any managed/public database; required for Aiven |
+| `DB_SSL_CA_BASE64`                            | unset                   | Base64-encoded provider CA PEM; recommended for Render/Aiven and required for `*.aivencloud.com` hosts |
+| `DB_SSL_CA`                                    | unset                   | PEM CA file path inside the running container; the file must exist there |
+| `DB_SSL_REJECT_UNAUTHORIZED`                  | unsupported             | Chain and hostname verification are always enforced; a `false` value fails startup |
 | `DB_POOL_SIZE` / `DB_SOCKET`                    | `10` / unset            | Connection pool size, or a unix socket instead of TCP          |
 | `CLEANUP_CRON`                                  | `*/5 * * * *`           | How often expired rows are actually deleted                    |
+| `RUN_BACKGROUND_JOBS`                           | `true`                  | In-process jobs; set `false` only when cPanel cron is configured |
 | `LOG_LEVEL`                                     | `info` in prod          | `debug` in development                                         |
 
 Deployment variables and a host comparison live in
-**[DEPLOY.md](DEPLOY.md)**; `npm run deploy:check` verifies them.
+**[DEPLOY.md](DEPLOY.md)**; `npm run deploy:check` verifies them. The cPanel
+Passenger setup is documented separately in **[CPANEL.md](CPANEL.md)**.
+
+### Email and phone verification delivery
+
+Set SMTP using a provider-approved sender address before enabling password
+recovery or email verification. Set all three Twilio values to enable SMS. The
+app queues deliveries in a MySQL outbox, encrypts queued bearer data with
+AES-GCM, retries transient failures, and destroys payload ciphertext after
+success or terminal failure. Pending payloads depend on the stable
+`JWT_REFRESH_SECRET`; coordinate any rotation with the outbox, since old queued
+payloads cannot be decrypted by the new secret. Verification codes and reset
+tokens are never returned in API responses or written to application logs.
+
+Without a provider, delivery is not completed: the job records/retries the
+outbox item and the admin health page reports configuration/degradation. Test
+with provider-owned addresses/numbers in staging, including actual arrival,
+expiry, resend limits, provider failure, and recovery; there is no email/SMS
+provider or delivery evidence bundled with this repository.
 
 ---
 
 ## npm scripts
 
-| Script                | What it does                                                    |
-| --------------------- | --------------------------------------------------------------- |
-| `npm run dev`         | Tailwind `--watch` **and** `nodemon`, side by side               |
-| `npm run dev:css`     | Tailwind watcher only                                            |
-| `npm run dev:server`  | `nodemon` only                                                   |
-| `npm run build:css`   | One-off minified stylesheet build (run before `npm start`)       |
-| `npm start`           | Start the server                                                 |
-| `npm run db:migrate`  | Apply `db/schema.sql` to an **empty** database - it refuses if tables already exist, because the snapshot recreates 23 tables and aborts on the other 19. `npm run db:migrate -- --if-needed` is the boot-safe form (no-op when present); `--fresh` drops the database and rebuilds it, taking every row |
-| `npm run db:seed`     | Insert demo users, matches and conversations. **Refuses under `NODE_ENV=production`** unless you opt in - see [Demo logins](#demo-logins) |
-| `npm run db:reset`    | `db:migrate --fresh` followed by `db:seed`                       |
-| `npm run lint`        | ESLint over `server/`, `public/js/` and `db/`                    |
-| `npm test`            | `scripts/dep-smoke.mjs`: 145 checks over the real upload, media, cookie, cron, query-parsing, deploy-guard and migration-guard code paths. Needs no database |
-| `npm run deploy:check`| Pre-flight for running somewhere public: origin, TLS, secrets, uploads dir, proxy flags, demo-data policy |
-| `npm run sweep -- --base https://your-host --auth --demo` | Walk a **running** deployment: all 15 pages, every asset they reference, the auth wall, CSRF, the 404 contract, and the theme paint |
+| Script | What it does |
+| --- | --- |
+| `npm run dev` | Tailwind watcher and Node server for local development |
+| `npm run build:css` | Build the minified stylesheet before packaging/deploying |
+| `npm start` | Start the server; the Docker image applies pending migrations before server startup |
+| `npm run db:migrate` | Apply ordered pending migrations. Existing unversioned installs are adopted only after baseline-table/column checks; this does not replay baseline DDL over them. |
+| `npm run db:migrate -- --target=0001` | Apply only the baseline to a new isolated database (used by migration CI). |
+| `npm run db:migrate -- --fresh` | Destructive development-only rebuild. Requires `ALLOW_DESTRUCTIVE_RESET=1` and `CONFIRM_DROP_DATABASE=<exact DB_NAME>`; disabled in production. Never use on real data. |
+| `npm run db:seed` | Destructive demo seeder for local throwaway databases only; it may clear rows. Do not run it on a populated or production database. |
+| `npm run db:reset` | `--fresh` plus demo seed; only for an explicitly disposable local database. |
+| `BOOTSTRAP_ADMIN_USERNAME=handle npm run admin:bootstrap` | One-time, locked and audited bootstrap of the first active account after migrations. See [Admin console and RBAC](#admin-console-and-rbac). |
+| `npm run lint` | ESLint across server, browser modules, migrations and scripts |
+| `npm test` | Dependency/config/migration-safety smoke checks; no database required |
+| `npm run test:security` | DB-free RBAC, CSRF, token, and migration-history unit tests |
+| `npm run test:browser -- --base http://127.0.0.1:3000` | Playwright browser suite; requires Chromium, a running server, and disposable seeded demo accounts. Install browser with `npx playwright install chromium`. |
+| `npm run deploy:check -- --offline` | Offline production configuration preflight |
+| `npm run sweep -- --base https://your-host --auth --demo` | Walk a running host: 17 pages, referenced assets, auth/CSRF behavior, 404s, and theme paint |
+| `npm audit --audit-level=high` | Check the locked dependency tree; CI uses the same blocking threshold |
+
+The CI-only `scripts/security-integration.mjs` creates synthetic accounts, content,
+and encrypted-outbox records in a local MySQL database named `ember_ci`, exercises
+API/DB controls, then cleans up. It requires explicit opt-in, `CI=true`, a local
+API and local DB host, and refuses any other database name or production mode.
+Do not repoint it at a shared or production database. CI also runs a real MySQL 8
+migration exercise, the route sweep, Socket.IO suite, and Chromium browser suite.
 
 ---
 
@@ -224,7 +273,7 @@ no feature is paywalled.
 | **Interests** | `/profile` | Up to 8 tags from a shared vocabulary. Shared ones are highlighted on every card as "you both like…". |
 | **Prompts** | `/profile` | Up to 3 Q&A answers that give people something to reply to. |
 | **Dating intent** | `/profile` | Long-term, casual, friends, or still figuring it out. |
-| **Photo verification** | `/settings` | A randomly chosen selfie pose grants a blue tick. See the note below. |
+| **Photo verification** | `/settings` | A randomly chosen selfie pose is submitted for manual review; a moderator grants the blue tick only after approval. See the note below. |
 | **Discovery filters** | `/settings` | Age range, maximum distance, verified-only, online-only. |
 | **Passport** | `/settings` | Browse another city before you travel there. |
 | **Incognito** | `/settings` | Browse without appearing in Nearby or leaving a visit behind. |
@@ -233,12 +282,14 @@ no feature is paywalled.
 
 ### A note on verification
 
-`submitVerification()` **auto-approves** every submission. There is no human
-moderator or liveness model in this deployment, and pretending otherwise would
-be worse than saying so. The `verifications` table already carries
-`status` / `reviewed_at` / `note`, so wiring in a real reviewer is a change to
-one function. The selfie itself is deleted as soon as the decision is recorded —
-it is evidence, not profile content.
+Photo verification is **manual-review only**. `submitVerification()` validates
+the issued pose challenge and stores a `pending` request; it never grants a
+badge. A moderator with the verification-review permission inspects the private
+evidence in the admin console and explicitly approves or rejects it. Only an
+approval sets the verified badge. After either decision, the evidence is removed
+from reviewer access and queued for durable storage deletion; failed unlinks are
+retried by the cleanup worker. There is no automated liveness model, so review
+and provider/operational readiness still need to be verified on staging.
 
 ---
 
@@ -422,47 +473,44 @@ be re-fetched, and does not survive on disk.
 
 ### Layer 1 — the schema decides the deadline
 
-`expires_at` is written at insert time and never trusted to the client. Both
-`messages` and `attachments` carry it:
-
-```sql
-expires_at DATETIME NOT NULL DEFAULT (created_at + INTERVAL 24 HOUR)
-```
-
-The column is indexed, because every read filters on it and the cleanup job
-scans it.
+`expires_at` is computed with the database clock, never trusted to the client.
+Messages and attachments carry it, and moments/posts use the same server-side
+expiry rule. The indexed deadline lets user-facing reads filter expired content
+while the cleanup worker finds rows to reclaim.
 
 ### Layer 2 — every read query filters on it
 
-There is no code path that returns an expired row. Every `SELECT` touching
-messages or attachments carries the same predicate:
-
-```sql
-WHERE conversation_id = ? AND expires_at > NOW()
-```
-
-So even if the cleanup job were stopped entirely, an expired message would
-become invisible the instant it lapses — to the REST API, to the socket
-`chat:join` history, and to the unread counters.
+User-facing conversation history, unread counts, attachment downloads and
+realtime history filter on the database expiry deadline. Chat attachment reads
+recheck the attachment row; social-media reads resolve through the live
+moment/post that owns the file. So even if cleanup stops, expired content is no
+longer returned by normal REST, socket-history or media routes; moderation
+evidence is governed by its separate access controls.
 
 ### Layer 3 — a cron job actually deletes the data
 
 `server/src/jobs/cleanup.js` runs **once on boot and then every 5 minutes**
-(`*/5 * * * *`, via `node-cron`). In order, one pass:
+(`*/5 * * * *`, via `node-cron`). Media ownership changes first insert storage
+keys into `media_deletion_queue` in the same database transaction that removes
+or expires the owning row. A worker pass then:
 
-1. Selects expired attachments and **unlinks their files** — original and
-   thumbnail — ignoring `ENOENT` so a missing file never aborts the run.
-2. Deletes the expired `attachments` rows.
-3. Deletes the expired `messages` rows.
-4. Deletes orphaned conversations with no messages, older than 30 days.
-5. Deletes expired refresh tokens.
-6. Logs `{deletedMessages, deletedFiles, durationMs}`.
+1. Retries queued file deletions. Missing files count as idempotent success;
+   transient storage failures stay queued with an incremented attempt count.
+2. Expires abandoned chat/social uploads and content rows. It queues original
+   and thumbnail keys before deleting their database references, then attempts
+   those unlinks immediately.
+3. Hard-deletes expired chat messages, moments, posts and comments, and removes
+   stale conversations, location records, encounters and tokens.
+4. Logs aggregate counts only; it never writes storage paths or message bodies
+   to logs.
 
-The whole pass is wrapped in `try/catch`, so a failure is logged and the next
-tick simply retries.
+The pass is wrapped in `try/catch`; a database or worker error is logged and the
+next scheduled run retries durable queue entries. Profile photos do **not** use
+the 24-hour content TTL: they remain until the owner removes them or deletes
+their account.
 
-```
-[cleanup] run complete {"deletedMessages":4,"deletedFiles":2,"durationMs":30}
+```text
+[cleanup] run complete {"deletedMessages":4,"deletedFiles":2,"failedMediaDeletions":0,"durationMs":30}
 ```
 
 ### Layer 4 — the client counts down and removes it live
@@ -481,10 +529,11 @@ above the thread states the rule and names the next message due to vanish.
 
 ### Clearing a chat by hand
 
-"Clear chat" in the thread menu soft-expires every message for **both** users by
-back-dating `expires_at` to `NOW()`. They disappear from all reads immediately
-(Layer 2) and the cron job reclaims the rows and files on its next pass — one
-deletion path, so a cleared chat can never leave orphaned files behind.
+"Clear chat" in the thread menu expires every message for **both** users by
+setting `expires_at` to `NOW()`. They disappear from user-facing reads
+immediately (Layer 2). The service queues attachment keys before changing their
+expiry and attempts file removal after commit; failed removals remain in the
+outbox for retry, while the cleanup worker later hard-deletes the rows.
 
 ### Watching it happen quickly
 
@@ -607,13 +656,17 @@ that the requester is a participant, refuses expired attachments, sets
 ```
 .
 ├── db/
-│   ├── schema.sql           # MySQL 8 schema (42 tables), the source of truth
-│   ├── migrate.js           # applies schema.sql; --fresh drops first
-│   └── seed.js              # 12 demo users, matches, conversations
+│   ├── schema.sql           # documentation copy of immutable 0001 baseline
+│   ├── migrations/          # ordered, checksummed SQL versions (0001–0004)
+│   ├── migrate.js           # safe pending-migration runner; guarded --fresh only for disposable DBs
+│   └── seed.js              # destructive local demo seeder
 ├── public/                  # everything served to the browser
 │   ├── index.html           # landing page
 │   ├── login.html
 │   ├── register.html        # multi-step wizard
+│   ├── forgot-password.html # generic recovery request form
+│   ├── reset-password.html # fragment-token password reset
+│   ├── admin.html           # permission-aware staff dashboard
 │   ├── app.html             # swipe deck
 │   ├── matches.html         # match roster (tiles)
 │   ├── chats.html           # conversation list
@@ -635,8 +688,15 @@ that the requester is a participant, refuses expired attachments, sets
 │       ├── call.js          # RTCPeerConnection, ICE, call state machine
 │       └── *-page.js        # one thin entry module per page (CSP-safe)
 ├── scripts/
-│   ├── smoke-socket.js      # 17 realtime assertions
-│   └── smoke-browser.js     # 53 headless end-to-end assertions
+│   ├── dep-smoke.mjs        # `npm test`: dependency/config/migration checks, no DB
+│   ├── security-integration.mjs # guarded synthetic MySQL/API security suite (CI only)
+│   ├── bootstrap-admin.mjs  # one-time, locked, audited initial-admin path
+│   ├── deploy-check.mjs     # public-host configuration preflight
+│   ├── smoke-socket.js      # Socket.IO handshake + chat round trip
+│   ├── smoke-browser.js     # Playwright end-to-end browser suite
+│   ├── cpanel-build.sh      # cPanel production dependency + CSS build
+│   ├── run-cleanup.mjs      # optional cPanel cron cleanup entrypoint
+│   └── run-delivery.mjs     # optional cPanel cron delivery entrypoint
 ├── server/
 │   ├── server.js            # Express app, helmet/CSP, routes, bootstrap
 │   └── src/
@@ -649,11 +709,6 @@ that the requester is a participant, refuses expired attachments, sets
 │       ├── sockets/         # chat + WebRTC signalling handlers
 │       ├── jobs/cleanup.js  # the 24-hour purge
 │       └── utils/           # logger, typed errors, zod schemas
-├── scripts/
-│   ├── dep-smoke.mjs        # `npm test`: dependency + config checks, no DB needed
-│   ├── deploy-check.mjs     # `npm run deploy:check`: pre-flight for a public host
-│   ├── smoke-socket.js      # Socket.IO handshake + chat round trip
-│   └── smoke-browser.js     # drives the pages in a real browser
 ├── deploy/
 │   ├── vps.sh               # provisions a bare VPS: docker, compose, Caddy, TLS
 │   ├── roll.sh              # moves a VPS onto a published image, health-gated
@@ -666,7 +721,9 @@ that the requester is a participant, refuses expired attachments, sets
 ├── fly.toml                 # Fly.io app with a volume for uploads
 ├── .dockerignore
 ├── .github/workflows/       # ci.yml (lint/test/audit/image) + publish.yml (ghcr)
+├── app.js                   # cPanel / Passenger startup entrypoint
 ├── eslint.config.js
+├── CPANEL.md                # cPanel setup, cron and host limitations
 ├── DEPLOY.md                # host comparison and the exact deploy commands
 ├── LICENSE                  # MIT
 ├── README.md
@@ -691,6 +748,8 @@ no `Authorization` header, ever.
 | POST   | `/logout`   | Clears cookies, revokes the refresh token               |
 | GET    | `/me`       | `{user, csrfToken, config}`                             |
 | GET    | `/username-available` | `?username=` → `{username, available}` — public, for live sign-up feedback |
+| POST   | `/forgot-password` | `{email}` → same generic response for known/unknown accounts; reset token only goes to encrypted delivery outbox |
+| POST   | `/reset-password` | `{token, password}` — one-use token; atomically changes password and revokes prior sessions |
 
 ### Users — `/api/users`
 
@@ -702,8 +761,10 @@ no `Authorization` header, ever.
 | PATCH  | `/me`            | Partial profile update                       |
 | POST   | `/me/photos`     | `multipart/form-data`, field `photo`         |
 | PATCH  | `/me/photos/order` | `{order: [photoId, …]}` — first is the avatar |
-| DELETE | `/me/photos/:id` |                                              |
-| DELETE | `/me`            | Delete the account and all its data          |
+| DELETE | `/me/photos/:id` | Remove an owned photo and thumbnail          |
+| POST   | `/me/verify/start` | `{kind:'email'\|'phone', phone?}` — issue a code; code is never in the response |
+| POST   | `/me/verify/confirm` | `{kind, code}` — attempt-limited, one-use confirmation |
+| DELETE | `/me`            | Delete the account and enqueue owned media for deletion |
 | POST   | `/blocks`        | `{blockedId}`                                |
 | POST   | `/reports`       | `{reportedId, reason}`                       |
 | GET    | `/:id`           | Public profile — `?from=nearby\|search\|deck\|…` records the visit |
@@ -751,31 +812,34 @@ inappropriate · ncii · other.
 
 ### Moderation — `/api/admin`
 
-Every route requires `requireAuth` **and** a minimum role. An authenticated
-account below the bar receives **404, not 403**: a 403 would confirm the surface
-exists. Mutations additionally require CSRF.
+Every route requires an authenticated account and an explicit permission. An
+authenticated account without that permission receives **404**, not 403, to
+avoid confirming the staff surface exists. Mutations also require CSRF.
 
-| Method | Path                        | Role      | Notes                                    |
-| ------ | --------------------------- | --------- | ---------------------------------------- |
-| GET    | `/whoami`                   | moderator | `{id, role, canAudit}` — drives the UI   |
-| GET    | `/overview`                 | moderator | Analytics                                |
-| GET    | `/reports`                  | moderator | `?status=&targetType=&reason=&limit=` + keyset cursor |
-| GET    | `/reports/:id`              | moderator | Full report + evidence snapshot + history |
-| POST   | `/reports/:id/resolve`      | moderator | `{status, resolution}`                   |
-| GET    | `/users`                    | moderator | `?q=&status=&role=&limit=&offset=`       |
-| GET    | `/users/:id`                | moderator | Detail, stats, reports, moderation history |
-| POST   | `/users/:id/suspend`        | moderator | `{days, reason}`                         |
-| POST   | `/users/:id/restore`        | moderator | Lifting a **ban** requires admin         |
-| POST   | `/content/remove`           | moderator | `{targetType, targetId, reason}` — soft delete |
-| POST   | `/users/:id/ban`            | **admin** | `{reason}` — permanent                   |
-| POST   | `/users/:id/role`           | **admin** | `{role}`                                 |
-| GET    | `/audit`                    | **admin** | `?limit=&before=&actorId=&action=`       |
+| Method | Path | Permission holders | Notes |
+| --- | --- | --- | --- |
+| GET | `/whoami` | All staff | Current role and explicit permission list |
+| GET | `/overview` | Analyst, moderator, admin | Real database-backed aggregates; zero denominators are shown as unavailable |
+| GET | `/health` | Admin | Live database/outbox/configuration checks; not an external uptime SLA |
+| GET | `/settings` | Admin | Read-only, secret-free runtime settings |
+| GET | `/reports`, `/reports/:id` | Support, moderator, admin | Queue/history; message text is redacted |
+| GET/POST | `/reports/:id/notes` | Support, moderator, admin | Notes; POST requires CSRF |
+| POST | `/reports/:id/assign`, `/reports/:id/resolve` | Moderator, admin | Assignment and state transitions are audited |
+| GET | `/users`, `/users/:id` | Support, moderator, admin | Email/phone appear only for admin/super-admin permissions |
+| POST | `/users/:id/suspend`, `/users/:id/restore` | Moderator, admin | Banned-account restoration is admin-only |
+| POST | `/users/:id/ban`, `/users/:id/role` | Admin | Permanent ban / role assignment; no self-promotion or equal/higher-rank grant |
+| POST | `/content/remove` | Moderator, admin | Soft deletion retains the content row for moderation context |
+| GET | `/verifications` | Moderator, admin | Pending review queue |
+| GET/POST | `/verifications/:id/evidence`, `/verifications/:id/review` | Moderator, admin | Private evidence; only reviewer permission; review decision is audited |
+| GET | `/audit`, `/activity` | Auditor, admin | Privacy-filtered; sensitive audit IP fields are admin-only |
 
-Roles rank `user < moderator < admin`. Nobody may action an account at or above
-their own rank, and nobody may action themselves — enforced in the service as
-well as the route, so a wiring mistake cannot become an escalation. Every
-state-changing action writes an append-only `admin_audit_log` row (actor,
-action, target, reason, IP, time); a rejected action writes nothing.
+`support_agent`, `analyst`, `moderator`, and `auditor` are separate capability
+sets, not inherited ranks. `super_admin` is the only wildcard role. The service
+re-reads the actor's current role in mutation transactions, so a stale browser
+or token role cannot authorize a write. Target-rank and self-action checks are
+also enforced server-side. Successful privileged changes write audit/activity
+records in the same database transaction; denied actions do not commit a
+mutation or a success audit event.
 
 **Sanctions apply to live sessions.** `requireAuth`, `optionalAuth` and
 `socketAuth` all re-check `status`, so a ban or suspension takes effect on the
@@ -850,9 +914,9 @@ routinely destroy the context behind an open report. The dashboard lives at
 | ------ | --------------------- | ------------------------------------------------------ |
 | POST   | `/api/uploads`        | `multipart/form-data`, field `file` → attachment record |
 | GET    | `/api/media/:id`      | `?variant=thumb\|full`; auth-gated, range-capable      |
-| GET    | `/api/photos/:filename` | Profile photos                                        |
+| GET    | `/api/photos/:filename` | Active profile photos; share links work signed out, while signed-in block checks still apply |
 | GET    | `/api/ice-servers`    | STUN/TURN configuration                                |
-| GET    | `/api/health`         | `{ok, db, uptime}`                                     |
+| GET    | `/api/health`         | `{status: "ok", uptimeSecs, ttlHours, time}`; not a DB or provider health check |
 
 ---
 
@@ -894,6 +958,71 @@ Discovery adds four more server → client events:
 
 ---
 
+## Admin console and RBAC
+
+The staff console is at `/admin`; its data comes from the authenticated `/api/admin`
+endpoints. The dashboard includes database-backed analytics, moderation reports,
+user search/detail and sanctions, verification review, audit/activity views,
+health checks, and a read-only runtime-settings summary. Settings are not
+editable in the dashboard. Health is observed at request time; it is not an
+uptime guarantee or a provider probe for every dependency.
+
+Roles are permission sets, not an ordinal ladder. Sibling staff roles do not
+inherit each other's permissions. The server enforces every route, re-checks the
+actor's current database role inside mutation transactions, and returns a
+non-enumerating `404` to authenticated accounts without access. Mutations also
+require CSRF. Only administrators see account email/phone PII; the UI is not the
+security boundary.
+
+| Role | Scope |
+| --- | --- |
+| `support_agent` | Read sanitized reports and notes; basic user lookup/detail without email or phone |
+| `analyst` | Read aggregate, database-backed analytics only |
+| `moderator` | Reports/notes/assignment, suspend/restore, soft content removal, and manual verification review |
+| `auditor` | Read privacy-filtered audit and activity records; no moderation or PII |
+| `admin` | Sensitive user/audit access, role management, bans, moderation, verification, analytics, health, and secret-free settings |
+| `super_admin` | Explicit wildcard permission; use sparingly and audit access |
+
+### Bootstrap the first administrator
+
+1. Apply every current migration with `npm run db:migrate`.
+2. Create the account through the normal sign-up flow and verify its email; do
+   not put a password or provider credential in command-line history.
+3. On a trusted operator host with the production database environment loaded,
+   run `BOOTSTRAP_ADMIN_USERNAME=your_handle npm run admin:bootstrap`.
+   The command refuses if an administrator already exists or the handle is
+   missing/inactive, uses a database lock and transaction, and records an
+   `admin.bootstrap` audit/activity event. It is a one-time recovery/bootstrap
+   path, not a role-management command.
+4. Sign in to refresh the session, confirm the expected permissions, then
+   remove `BOOTSTRAP_ADMIN_USERNAME` from the environment. Use the audited
+   console for subsequent role changes.
+
+There is no initial staff account seeded by the app. Do not run direct SQL role
+updates in production. Keep at least two independently controlled admin
+accounts and an off-platform recovery process; that is an operator control,
+not something verified by CI.
+
+### Verification evidence and retention
+
+Email/phone codes and password-reset links are delivered from an encrypted
+outbox and never included in API responses or logs. Verification is independent
+across email, phone, and photo-review tiers. A photo upload creates a pending
+review item; it does **not** grant a badge. Evidence is accessible only to the
+review permission, is removed from its row after review, and enters a durable
+media-deletion queue. Account deletion queues owned media, including profile
+photos and thumbnails, for unlinking. Profile photos are **not** part of the
+24-hour content purge; owners control removal by deleting a photo or account.
+
+The `/api/admin/health` and `/api/admin/settings` surfaces return live checks and
+non-secret configuration booleans only. They do not reveal database host,
+credentials, provider tokens, or raw user message content. Message-report text
+is redacted in the staff API. Delivery providers must still be configured and
+verified separately; the code cannot prove a production email/SMS reached a
+person.
+
+---
+
 ## Security notes
 
 * **Tokens live in cookies, never in web storage.** Access (15 min) and refresh
@@ -912,20 +1041,23 @@ Discovery adds four more server → client events:
   EXIF — including GPS coordinates. Stored names are random; the original is
   never used as a path.
 * **Rate limits:** global 300/min, auth 20/15 min, password reset 5/15 min,
-  uploads 30/min, swipes 120/min, messages 25/10 s over REST and 20/10 s over
-  the socket.
+  verification sends 5 per kind per 15 min (plus 10 per user), and five incorrect
+  code attempts per issuance; uploads 30/min, swipes 120/min, messages 25/10 s
+  over REST and 20/10 s over the socket.
 * **A password change ends every existing session, immediately.** Revoking
   `refresh_tokens` rows is not enough on its own: access tokens are stateless
   JWTs that are never looked up, so on their own they would stay valid for the
   rest of their 15-minute TTL after a reset — the exact window a
   compromised-account reset exists to close. `users.sessions_valid_from` is
   stamped on any credential change and every access token issued before it is
-  refused, across REST *and* the Socket.IO handshake. Covered by
-  `tmp/phase10.mjs`.
+  refused, across REST *and* the Socket.IO handshake. The synthetic API/DB CI
+  suite checks access-session invalidation after password recovery; Socket.IO
+  revocation is still a staging/browser acceptance item.
 * **Account recovery does not leak who is registered.** `forgot-password`
   returns an identical response for known and unknown addresses. Reset tokens
-  are stored as hashes, are single-use, expire, and issuing a new one
-  invalidates the previous one.
+  are stored as hashes, issue/consumption are serialized, and consumption,
+  password update and session revocation commit atomically. Tokens are single-use
+  and expire; the delivery outbox stores them only as authenticated ciphertext.
 * **Every query is parameterised.** No user value is ever concatenated into SQL.
 * **Authorisation is checked per resource**, not just per route: conversation,
   attachment and call access all re-verify participation.
@@ -935,9 +1067,10 @@ Discovery adds four more server → client events:
   someone saved stops working the instant the content is deleted, expires, or
   the owner blocks them — and an unattached upload is unreadable even by the
   person who uploaded it. Filenames are random UUIDs, and responses carry
-  `Cache-Control: private, no-store` so no shared proxy retains a copy. This is
-  covered by `tmp/phase6-media.mjs`, which tests it from the attacker's side:
-  anonymous reads, guessed UUIDs, path traversal and post-block reads.
+  `Cache-Control: private, no-store` so no shared proxy retains a copy. The
+  checked-in synthetic API/DB suite currently verifies moderation evidence
+  privacy and account-media deletion; anonymous/guessed-UUID/path-traversal
+  media-read probes still need to be added to the reproducible integration suite.
 
 ## Performance notes
 
@@ -1026,36 +1159,16 @@ card photo (it *is* the viewport), match modals, the chat/moment lightbox, and
 local upload previews — because lazy-loading those causes a visible blank
 flash.
 
-The discovery surfaces are the hot path: the deck has to rank every eligible
-candidate before it can return ten. Three rewrites, each measured on a
-50,012-user fixture (`tmp/p9-loadgen2.sql` + `tmp/p10-deckload.sql`) and each
-verified to leave the output byte-identical via `tmp/p10-deckdiff.mjs`:
+The discovery deck ranks candidates before returning a page. The implementation
+uses a derived shared-interest count, separate block predicates, narrow sort
+keys, and a date-range age filter. These are query-shape choices, not a
+published performance guarantee.
 
-| Change | Why the old form was slow |
-| --- | --- |
-| Shared-interest count: correlated subquery → derived `LEFT JOIN` | Re-executed once per candidate — 50k executions, ~190 ms of the deck alone |
-| Block filter: one `NOT EXISTS` with `OR` → two `NOT EXISTS` | The `OR` spans two different indexes, so MariaDB scanned the whole `uniq_block` index per candidate instead of seeking. ~4x faster, applied to all ten occurrences across four services |
-| Deferred join: sort ids + sort keys, then fetch wide columns | The sort buffer was carrying `bio`/`city`/`avatar_url` for 50k rows to return 10 |
-
-Measured end to end (HTTP, including JSON serialisation), old code vs new code
-against an identical database: **p50 235 ms → 97 ms, p95 282 ms → 109 ms.**
-
-Two further notes, recorded because the numbers argue against the obvious move:
-
-- The age filter was `TIMESTAMPDIFF(YEAR, birthdate, CURDATE()) BETWEEN ? AND ?`,
-  which is non-sargable — a function evaluated per row that can never use an
-  index. It is now an equivalent date range (proven to select identical rows
-  before it shipped). On its own this changed nothing measurable, because the
-  filter matches almost every row; it is kept because it is strictly better and
-  because it stops being free the moment someone adds a birthdate index.
-- `idx_users_deck_rank (is_online, last_seen_at, id)` supports the ORDER BY tail
-  but only buys ~4%, because `boosted` and `shared_count` sort ahead of it. It
-  indexes two columns written on every connect/disconnect, so the write cost was
-  measured before keeping it: ~1% on 2,000 presence updates. Kept, narrowly.
-
-Benchmarks live in `tmp/` and are excluded from the repo; they need the load
-fixtures, which must be removed (`DELETE FROM users WHERE username LIKE
-'loaduser%'`) before running the test suites, since those assert 12 seed users.
+**No reproducible load fixture or benchmark runner is checked into this
+repository.** Earlier local timing notes were stored in ignored `tmp/` files and
+cannot be reproduced from a fresh clone. Do not treat historical latency,
+multiplier, or row-count figures as an SLO. Run production-like load tests on an
+isolated, representative staging dataset before estimating capacity.
 
 ---
 
@@ -1085,25 +1198,34 @@ button in the mobile header (and from the sidebar on desktop) — it is a
 lower-frequency destination than the five above. `markActiveTab` matches the
 full pathname, so `/chat?c=1` does not light up the `/chats` tab.
 
-### Test suites
+### Reproducible validation
 
-> **Those thirty-three suites are not in this repository.** They live in `tmp/`,
-> which is gitignored, so a fresh clone cannot run them. What IS checked in and
-> runnable by anyone: `npm test` (`scripts/dep-smoke.mjs`, 145 checks, no database
-> needed) and `npm run deploy:check`. `scripts/smoke-socket.js` and
-> `scripts/smoke-browser.js` also live here, but both need a server already running
-> with a migrated, seeded database. CI runs the two that need no database, on
-> Node 20 and 22, plus a real `docker build` of the production image.
+Start with the DB-free checks:
 
-Thirty-three suites, run together by `node tmp/regress-all.mjs` (which reseeds the
-database between suites, since several mutate fixtures destructively). See
-[TESTING.md](TESTING.md) for what each one covers and for the bugs they caught.
-Start the server with `RATE_LIMIT_GLOBAL_PER_MIN=100000
-RATE_LIMIT_RESET_PER_15MIN=1000` for a full run: a dozen suites share one source
-IP and would otherwise exhaust the in-memory per-IP ceilings. Only those two
-blunt ceilings move — the auth limiter, per-account login backoff, CSRF and
-every authorisation check stay at production values, which is why
-`tmp/bruteforce.mjs` still passes in a full run.
+```bash
+npm ci
+npm run lint
+npm test
+npm run test:security
+npm audit --audit-level=high
+```
+
+The browser suite needs a disposable database seeded with demo accounts, a
+running server, and the Playwright-managed Chromium build:
+
+```bash
+npx playwright install chromium
+npm run build:css
+npm run test:browser -- --base http://127.0.0.1:3000
+```
+
+The route sweep and Socket.IO suite also require a live server; see
+[TESTING.md](TESTING.md) for exact prerequisites. CI additionally starts an
+isolated MySQL 8 service, applies migrations without a reset, creates and cleans
+synthetic security fixtures in `ember_ci`, and runs the API, route, socket, and
+browser suites. CI results are not staging or production evidence: no external
+provider delivery, production deployment, or real-user-data migration was
+performed as part of this repository work.
 
 ---
 
@@ -1114,8 +1236,8 @@ cp .env.example .env      # set the two JWT secrets; compose refuses to start wi
 docker compose up --build
 ```
 
-This starts MySQL 8 with a healthcheck, waits for it, applies the schema and
-serves on **http://localhost:3000**. Uploads and database files persist in named
+This starts MySQL 8 with a healthcheck, waits for it, applies pending versioned
+migrations, and serves on **http://localhost:3000**. Uploads and database files persist in named
 volumes, and both services are published on `127.0.0.1` only (set
 `APP_BIND_ADDR=0.0.0.0` / `DB_BIND_ADDR=0.0.0.0` to reach them from a phone on
 your LAN).
