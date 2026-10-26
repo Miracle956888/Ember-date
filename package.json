@@ -15,6 +15,10 @@
     "build:css": "tailwindcss -i ./src/input.css -o ./public/css/app.css --minify",
     "build": "npm run build:css",
     "start": "node server/server.js",
+    "start:cpanel": "node app.js",
+    "cpanel:build": "bash scripts/cpanel-build.sh",
+    "job:cleanup": "node scripts/run-cleanup.mjs",
+    "job:delivery": "node scripts/run-delivery.mjs",
     "db:migrate": "node db/migrate.js",
     "db:ping": "node scripts/db-ping.mjs",
     "db:seed": "node db/seed.js",
@@ -39,13 +43,13 @@
     "file-type": "^22.1.0",
     "helmet": "^7.1.0",
     "jsonwebtoken": "^9.0.2",
-    "multer": "^2.4.0",
+    "multer": "^2.5.0",
     "mysql2": "^3.11.3",
     "node-cron": "^4.6.0",
-    "nodemailer": "^10.1.1",
+    "nodemailer": "^10.2.1",
     "sharp": "^0.35.5",
     "socket.io": "^4.7.5",
-    "zod": "^3.23.8"
+    "zod": "^4.6.7"
   },
   "overrides": {
     "js-yaml": "^4.3.2",

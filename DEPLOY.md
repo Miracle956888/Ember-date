@@ -9,9 +9,10 @@
 
 - Node.js 20 or 22, MySQL 8 (MariaDB 10.6+ is supported through collation
   adaptation, but the live migration CI job uses MySQL 8).
-- One continuously running app instance. The current realtime deployment uses
-  in-process Socket.IO state and a local cleanup/delivery scheduler; horizontal
-  scaling is not configured.
+- One app process for realtime service. The current Socket.IO presence/room
+  state is in-process, so horizontal/multi-worker scaling is not configured.
+  Cleanup/delivery jobs run in-process by default; the [cPanel guide](CPANEL.md)
+  documents optional host cron entrypoints for accounts that suspend/recycle apps.
 - HTTPS termination and correct proxy configuration (`TRUST_PROXY=1`,
   `FORCE_HTTPS=1` where the app performs the redirect).
 - Persistent, private storage for `UPLOAD_DIR`. Do not place it under
@@ -25,6 +26,10 @@ validated by a live provider account. Verify service schema, TLS, volume
 permissions, secrets support, region, limits, and pricing directly with the
 provider before use. Cost/availability estimates are intentionally not stated
 here because they were not verified for this release.
+
+For a cPanel/Passenger setup, see the separate [cPanel deployment guide](CPANEL.md).
+A cPanel logo alone does not imply Node.js, WebSocket, outbound-DB, or persistent
+storage support; the guide lists the plan prerequisites and limits.
 
 ## VPS using Docker Compose
 
@@ -161,6 +166,7 @@ file outside version control). Do not put real values in `render.yaml`,
 | `TWILIO_ACCOUNT_SID`, `TWILIO_AUTH_TOKEN`, `TWILIO_FROM_NUMBER` | All three required for phone-verification SMS |
 | `TURN_URL`, `TURN_USERNAME`, `TURN_CREDENTIAL` | Required for reliable calls across strict NATs; otherwise calls may be limited to direct paths |
 | `MESSAGE_TTL_HOURS`, `CLEANUP_CRON` | Review the retention contract and ensure cleanup runs continuously |
+| `RUN_BACKGROUND_JOBS` | `true` for one always-running app process; set `false` only when both host cron jobs are configured (see [CPANEL.md](CPANEL.md)) |
 
 ### Aiven MySQL TLS on Render
 

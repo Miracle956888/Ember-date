@@ -385,12 +385,12 @@ export const phoneSchema = trimmed(
 );
 
 export const startVerificationSchema = z.object({
-  kind: z.enum(['email', 'phone'], { errorMap: () => ({ message: 'Choose email or phone.' }) }),
+  kind: z.enum(['email', 'phone'], { error: 'Choose email or phone.' }),
   phone: phoneSchema.optional()
 });
 
 export const confirmVerificationSchema = z.object({
-  kind: z.enum(['email', 'phone'], { errorMap: () => ({ message: 'Choose email or phone.' }) }),
+  kind: z.enum(['email', 'phone'], { error: 'Choose email or phone.' }),
   code: trimmed(z.string().regex(/^\d{6}$/, 'Enter the 6-digit code.'))
 });
 
@@ -400,7 +400,7 @@ export const confirmVerificationSchema = z.object({
 
 /** Mirrors the ENUM in `content_likes` and LIKE_TARGETS in like.service. */
 export const likeTargetTypeSchema = z.enum(['profile', 'photo', 'post', 'moment', 'comment'], {
-  errorMap: () => ({ message: 'Unknown like target.' })
+  error: 'Unknown like target.'
 });
 
 export const likeBodySchema = z.object({
@@ -485,7 +485,7 @@ export const socialMediaSchema = z.object({
 
 export const createMomentSchema = z
   .object({
-    kind: z.enum(['photo', 'video', 'text'], { errorMap: () => ({ message: 'Choose a photo, video or text moment.' }) }),
+    kind: z.enum(['photo', 'video', 'text'], { error: 'Choose a photo, video or text moment.' }),
     body: trimmed(z.string().max(500, 'Keep it under 500 characters.')).optional().nullable(),
     background: z.enum(['ember', 'dusk', 'ocean', 'forest', 'mono']).optional().nullable(),
     media: socialMediaSchema.optional().nullable()
@@ -498,7 +498,7 @@ export const createMomentSchema = z
 
 export const momentReactionSchema = z.object({
   emoji: z.enum(['❤️', '🔥', '😂', '😮', '😍', '👏'], {
-    errorMap: () => ({ message: 'Choose one of the offered reactions.' })
+    error: 'Choose one of the offered reactions.'
   })
 });
 
@@ -544,7 +544,7 @@ export const contentReportSchema = z.object({
   targetId: numericIdSchema,
   reason: z.enum(
     ['scam', 'fake', 'impersonation', 'harassment', 'spam', 'threats', 'inappropriate', 'ncii', 'other'],
-    { errorMap: () => ({ message: 'Choose a reason for the report.' }) }
+    { error: 'Choose a reason for the report.' }
   ),
   details: trimmed(z.string().max(1000)).optional().nullable()
 });

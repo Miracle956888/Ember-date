@@ -15,9 +15,10 @@ modules on the front end; Node.js, Express, Socket.IO and MySQL 8 on the back
 end. No SPA framework, no ORM, no CDN script tags.
 
 **Putting it on a public host:** [`DEPLOY.md`](DEPLOY.md) is the operator guide -
-which provider and why, every environment variable, TLS to a managed MySQL, and how
-to prove the running site is healthy (`npm run deploy:check`, then
-`npm run sweep -- --base https://your-url --auth --demo`).
+which provider and why, every environment variable, TLS to a managed MySQL, and
+how to verify a running site. For cPanel/Passenger, see [`CPANEL.md`](CPANEL.md)
+and check the provider's Node.js, WebSocket, process, storage, and network limits
+before choosing a plan.
 
 Provision a MySQL 8-compatible database first (TiDB Cloud Serverless or Aiven both
 have free tiers and speak the protocol this app uses), then this button reads
@@ -166,10 +167,12 @@ except the database credentials.
 | `DB_SSL_REJECT_UNAUTHORIZED`                  | unsupported             | Chain and hostname verification are always enforced; a `false` value fails startup |
 | `DB_POOL_SIZE` / `DB_SOCKET`                    | `10` / unset            | Connection pool size, or a unix socket instead of TCP          |
 | `CLEANUP_CRON`                                  | `*/5 * * * *`           | How often expired rows are actually deleted                    |
+| `RUN_BACKGROUND_JOBS`                           | `true`                  | In-process jobs; set `false` only when cPanel cron is configured |
 | `LOG_LEVEL`                                     | `info` in prod          | `debug` in development                                         |
 
 Deployment variables and a host comparison live in
-**[DEPLOY.md](DEPLOY.md)**; `npm run deploy:check` verifies them.
+**[DEPLOY.md](DEPLOY.md)**; `npm run deploy:check` verifies them. The cPanel
+Passenger setup is documented separately in **[CPANEL.md](CPANEL.md)**.
 
 ### Email and phone verification delivery
 
@@ -690,7 +693,10 @@ that the requester is a participant, refuses expired attachments, sets
 │   ├── bootstrap-admin.mjs  # one-time, locked, audited initial-admin path
 │   ├── deploy-check.mjs     # public-host configuration preflight
 │   ├── smoke-socket.js      # Socket.IO handshake + chat round trip
-│   └── smoke-browser.js     # Playwright end-to-end browser suite
+│   ├── smoke-browser.js     # Playwright end-to-end browser suite
+│   ├── cpanel-build.sh      # cPanel production dependency + CSS build
+│   ├── run-cleanup.mjs      # optional cPanel cron cleanup entrypoint
+│   └── run-delivery.mjs     # optional cPanel cron delivery entrypoint
 ├── server/
 │   ├── server.js            # Express app, helmet/CSP, routes, bootstrap
 │   └── src/
@@ -715,7 +721,9 @@ that the requester is a participant, refuses expired attachments, sets
 ├── fly.toml                 # Fly.io app with a volume for uploads
 ├── .dockerignore
 ├── .github/workflows/       # ci.yml (lint/test/audit/image) + publish.yml (ghcr)
+├── app.js                   # cPanel / Passenger startup entrypoint
 ├── eslint.config.js
+├── CPANEL.md                # cPanel setup, cron and host limitations
 ├── DEPLOY.md                # host comparison and the exact deploy commands
 ├── LICENSE                  # MIT
 ├── README.md

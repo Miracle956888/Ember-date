@@ -37,6 +37,7 @@ Object.assign(process.env, {
   DB_PASSWORD: 'smoke',
   DB_NAME: 'smoke_never_connects',
   UPLOAD_DIR: tmpUploads,
+  RUN_BACKGROUND_JOBS: 'true',
   MAX_IMAGE_MB: '1',
   MAX_VIDEO_MB: '1'
 });
@@ -119,6 +120,13 @@ const expressMod = await import('express');
 const express = expressMod.default;
 const { handleUpload, handlePhotoUpload } = await import('../server/src/middleware/upload.js');
 const { cookieOptions, env } = await import('../server/src/config/env.js');
+const {
+  createMomentSchema,
+  contentReportSchema,
+  likeTargetTypeSchema,
+  momentReactionSchema,
+  startVerificationSchema
+} = await import('../server/src/utils/validators.js');
 const { forceHttps } = await import('../server/src/middleware/https.js');
 const cronMod = await import('node-cron');
 // node-cron 4 ships ESM named exports; 3.x had a CJS default object. Accept both so
@@ -265,6 +273,17 @@ check(smallJson.status === 200 && smallBody.keys.includes('username'), `express.
 const formRes = await fetch(`${base}/json`, { method: 'POST', headers: { 'content-type': 'application/x-www-form-urlencoded' }, body: 'a=1&b=2' });
 check(formRes.status === 200, 'urlencoded parser (used by no route today, but mounted by server.js) still works');
 
+section('Zod 4 validation compatibility');
+function firstValidationMessage(schema, value) {
+  const result = schema.safeParse(value);
+  return result.success ? '' : result.error.issues[0]?.message || '';
+}
+check(firstValidationMessage(startVerificationSchema, { kind: 'sms' }) === 'Choose email or phone.', 'Zod 4 preserves the verification-kind message');
+check(firstValidationMessage(likeTargetTypeSchema, 'unknown') === 'Unknown like target.', 'Zod 4 preserves the like-target message');
+check(firstValidationMessage(createMomentSchema, { kind: 'unknown' }) === 'Choose a photo, video or text moment.', 'Zod 4 preserves the moment-kind message');
+check(firstValidationMessage(momentReactionSchema, { emoji: 'unknown' }) === 'Choose one of the offered reactions.', 'Zod 4 preserves the reaction message');
+check(firstValidationMessage(contentReportSchema, { targetType: 'profile', targetId: '1', reason: 'unknown' }) === 'Choose a reason for the report.', 'Zod 4 preserves the report-reason message');
+
 // --------------------------------------------------------------------------
 section('5. https upgrade rule (new middleware/https.js)');
 function stubReq({ path: p = '/', method = 'GET', host = 'ember.example', fwdProto } = {}) {
@@ -402,9 +421,10 @@ check(/Password123!/.test(readme), 'README still documents the dev demo password
 // --------------------------------------------------------------------------
 section('9. production config surface');
 check(env.isProd === false, 'env.isProd reflects NODE_ENV for the smoke run itself');
+check(env.RUN_BACKGROUND_JOBS === true, 'in-process background jobs remain enabled by default');
 const prodEnv = spawnSync(
   process.execPath,
-  ['-e', "import('./server/src/config/env.js').then(m=>console.log(JSON.stringify({prod:m.env.isProd,force:m.env.FORCE_HTTPS,cookie:m.cookieOptions(1000)})))"],
+  ['-e', "import('./server/src/config/env.js').then(m=>console.log(JSON.stringify({prod:m.env.isProd,force:m.env.FORCE_HTTPS,jobs:m.env.RUN_BACKGROUND_JOBS,cookie:m.cookieOptions(1000)})))"],
   {
     cwd: ROOT,
     encoding: 'utf8',
@@ -413,6 +433,7 @@ const prodEnv = spawnSync(
       NODE_ENV: 'production',
       TRUST_PROXY: '1',
       FORCE_HTTPS: '1',
+      RUN_BACKGROUND_JOBS: 'false',
       JWT_ACCESS_SECRET: 'a'.repeat(32),
       JWT_REFRESH_SECRET: 'b'.repeat(32)
     }
@@ -426,6 +447,7 @@ try {
 }
 check(prodShape?.prod === true, `NODE_ENV=production is honoured (${prodEnv.stdout.trim() || prodEnv.stderr.slice(0, 120)})`);
 check(prodShape?.force === true, 'FORCE_HTTPS=1 is read into env for public deploys');
+check(prodShape?.jobs === false, 'RUN_BACKGROUND_JOBS=false disables in-process jobs for external host cron');
 check(prodShape?.cookie?.secure === true, 'production cookies are Secure (session cookie cannot ride over http)');
 const shortSecret = spawnSync(
   process.execPath,
@@ -771,6 +793,26 @@ if (ci) {
   const prod = (verify?.steps || []).find((st) => String(st.name).includes('production mode'));
   check(/FORCE_HTTPS=1/.test(String(prod?.run)) && /301/.test(String(prod?.run)) && /Secure/.test(String(prod?.run)), 'deploy-verify boots in production and checks HTTPS upgrade + Secure cookies');
 }
+
+// --------------------------------------------------------------------------
+section('cPanel / Passenger deployment contract');
+const cpanelGuide = fs.readFileSync(path.join(ROOT, 'CPANEL.md'), 'utf8');
+const cpanelEntry = fs.readFileSync(path.join(ROOT, 'app.js'), 'utf8');
+const cpanelBuild = fs.readFileSync(path.join(ROOT, 'scripts', 'cpanel-build.sh'), 'utf8');
+const cpanelServer = fs.readFileSync(path.join(ROOT, 'server', 'server.js'), 'utf8');
+check(pkg.scripts['start:cpanel'] === 'node app.js', 'package exposes the Passenger startup command');
+check(/import ['"]\.\/server\/server\.js['"]/.test(cpanelEntry), 'Passenger entrypoint loads the normal app server');
+check(/app\.js/.test(cpanelGuide) && /single app process/.test(cpanelGuide), 'cPanel guide names the entrypoint and documents the single-worker constraint');
+check(/npm ci --include=dev/.test(cpanelBuild) && /npm run build:css/.test(cpanelBuild) && /npm prune --omit=dev/.test(cpanelBuild), 'cPanel build installs build tools, produces CSS, then prunes dev dependencies');
+check(!/db:migrate|db:reset|db\/seed/.test(cpanelBuild), 'cPanel build does not migrate or seed a live database');
+check(/if \(env\.RUN_BACKGROUND_JOBS\)/.test(cpanelServer), 'server honors the host-cron switch for in-process jobs');
+for (const jobFile of ['run-cleanup.mjs', 'run-delivery.mjs']) {
+  const jobScript = fs.readFileSync(path.join(ROOT, 'scripts', jobFile), 'utf8');
+  check(/closePool/.test(jobScript) && /process\.exitCode/.test(jobScript), `${jobFile} closes its DB pool and returns a failing exit status on errors`);
+}
+check(/WebSocket/.test(cpanelGuide) && /outbound TCP/i.test(cpanelGuide) && /public_html/.test(cpanelGuide), 'cPanel guide calls out proxy, network, and private-storage prerequisites');
+const cpanelShellCheck = spawnSync('bash', ['-n', path.join(ROOT, 'scripts', 'cpanel-build.sh')], { encoding: 'utf8' });
+check(cpanelShellCheck.status === 0, 'cPanel build helper passes bash syntax validation', cpanelShellCheck.stderr.trim());
 
 fs.rmSync(tmpUploads, { recursive: true, force: true });
 server.close();

@@ -40,6 +40,7 @@ jobs:
 
       - name: Syntax-check every shipped file
         run: |
+          node --check app.js
           find server public/js db scripts -name '*.js' -o -name '*.mjs' | while read -r f; do
             node --check "$f" || { echo "SYNTAX ERROR in $f"; exit 1; }
           done
@@ -193,7 +194,7 @@ jobs:
         # has to start, be poked and be shut down inside the same shell.
         run: |
           set -uo pipefail
-          NODE_ENV=development node server/server.js > server.log 2>&1 &
+          NODE_ENV=development node app.js > server.log 2>&1 &
           SRV=$!
           trap 'echo "---- server.log ----"; tail -60 server.log' EXIT
           for i in $(seq 1 40); do
@@ -220,7 +221,7 @@ jobs:
       - name: Boot the same build in production mode and check the deploy guards
         run: |
           set -uo pipefail
-          NODE_ENV=production TRUST_PROXY=1 FORCE_HTTPS=1 node server/server.js > prod.log 2>&1 &
+          NODE_ENV=production TRUST_PROXY=1 FORCE_HTTPS=1 node app.js > prod.log 2>&1 &
           SRV=$!
           trap 'echo "---- prod.log ----"; tail -60 prod.log' EXIT
           for i in $(seq 1 40); do

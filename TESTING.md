@@ -173,17 +173,19 @@ Before using real data or inviting users:
 
 ## Current verification record
 
-In the Arena workspace on 2026-10-18, `npm run lint`, `npm test` (183 passed),
-`npm run test:security` (22 passed), `npm run build:css`,
+In the Arena workspace on 2026-10-26, `npm run lint`, `npm test` (214 passed),
+`npm run test:security` (22 passed), `npm run cpanel:build`,
 `npm audit --audit-level=high` (0 vulnerabilities), and `git diff --check` passed.
-The offline deploy preflight with temporary synthetic configuration reported 0
-blockers and 3 warnings (repo-adjacent upload path needs a durable-volume check,
-missing local `ffmpeg`, and unconfigured TURN). No credentials were added to
-the repository.
+The cPanel build was exercised end to end: it installed locked build/runtime
+dependencies, generated the ignored CSS asset, and pruned dev dependencies. The
+cron entrypoints were also checked to fail with a nonzero status and a sanitized
+message when required configuration is absent. No credentials were added to the
+repository.
 
-The MySQL port was refused and the Playwright-managed Chromium executable was
-not installed in this workspace. Therefore live DB migration/API integration,
-route sweep, socket suite, browser rendering, staging, provider delivery,
+No cPanel account, Passenger host, Aiven endpoint, or production database was
+accessed. Therefore actual cPanel routing/WebSocket support, live DB
+migration/API integration, route sweep, hosted sockets/browser rendering,
+staging, provider delivery,
 deployment, backup restore, and production verification were not run. The
 workflow definitions are checked locally, but no hosted Actions result is
 available for this revision.

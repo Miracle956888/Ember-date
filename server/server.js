@@ -269,8 +269,12 @@ async function start() {
   await resetAllPresence().catch(() => {});
 
   initSockets(server);
-  startCleanupJob();
-  startDeliveryJob();
+  if (env.RUN_BACKGROUND_JOBS) {
+    startCleanupJob();
+    startDeliveryJob();
+  } else {
+    log.warn('in-process background jobs disabled; configure host cron for cleanup and delivery');
+  }
 
   await new Promise((resolve) => server.listen(env.PORT, '0.0.0.0', resolve));
   log.info(`listening on http://0.0.0.0:${env.PORT}`, {

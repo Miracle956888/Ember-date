@@ -173,6 +173,11 @@ export const env = Object.freeze({
   // 301 http -> https using the proxy's X-Forwarded-Proto. Off by default so a
   // plain-HTTP LAN box or container health check never loops; on for public hosts.
   FORCE_HTTPS: process.env.FORCE_HTTPS === '1' || process.env.FORCE_HTTPS === 'true',
+  // Keep true for a single always-running app process. Set false only when the
+  // host runs scripts/run-cleanup.mjs and scripts/run-delivery.mjs via cron.
+  RUN_BACKGROUND_JOBS: !['0', 'false', 'no', 'off'].includes(
+    (process.env.RUN_BACKGROUND_JOBS || 'true').trim().toLowerCase()
+  ),
 
   DB: Object.freeze({
     host: process.env.DB_HOST,
