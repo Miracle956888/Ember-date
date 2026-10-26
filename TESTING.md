@@ -182,10 +182,13 @@ cron entrypoints were also checked to fail with a nonzero status and a sanitized
 message when required configuration is absent. No credentials were added to the
 repository.
 
+Hosted GitHub CI on commit `55069b1` passed both Node 20/22 lint/dependency/audit
+jobs, the disposable MySQL 8 migration and app/route/socket/browser sweep, and
+the Docker image health check. Those are test-environment results, not production
+or hosting-provider evidence. GitHub emitted non-blocking runner/action-runtime
+migration warnings.
+
 No cPanel account, Passenger host, Aiven endpoint, or production database was
-accessed. Therefore actual cPanel routing/WebSocket support, live DB
-migration/API integration, route sweep, hosted sockets/browser rendering,
-staging, provider delivery,
-deployment, backup restore, and production verification were not run. The
-workflow definitions are checked locally, but no hosted Actions result is
-available for this revision.
+accessed. Actual cPanel routing/WebSocket support, Aiven connectivity, staging,
+provider delivery, deployment, backup restore, and production verification
+remain untested.
